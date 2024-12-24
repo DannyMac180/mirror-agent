@@ -20,6 +20,8 @@ dependencies = [
     "msgspec>=0.18.6",
     "langchain-mongodb>=0.1.9",
     "langchain-cohere>=0.2.4",
+    "watchdog>=3.0.0",
+    "pathspec>=0.12.1",
 ]
 
 [project.optional-dependencies]

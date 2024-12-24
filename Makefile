@@ -1,4 +1,4 @@
-.PHONY: all format lint test tests test_watch integration_tests docker_tests help extended_tests
+.PHONY: all format lint test tests test_watch integration_tests docker_tests help extended_tests start
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -53,12 +53,57 @@ spell_fix:
 # HELP
 ######################
 
+## format: Format code
+format:
+	$(MAKE) ruff_format
+	$(MAKE) black
+
+## lint: Run linters
+lint:
+	$(MAKE) ruff_check
+	$(MAKE) mypy
+
+## test: Run unit tests
+test: tests
+
+## tests: Run unit tests
+tests:
+	pytest tests/unit_tests -v
+
+## test_watch: Run unit tests in watch mode
+test_watch:
+	ptw tests/unit_tests -- -v
+
+## integration_tests: Run integration tests
+integration_tests:
+	pytest tests/integration_tests -v
+
+## docker_tests: Run tests in Docker
+docker_tests:
+	docker compose -f docker-compose.yml up --build test
+
+## extended_tests: Run extended test suite
+extended_tests:
+	pytest tests -v
+
+## start: Start the project with file watcher
+start:
+	@echo "Starting project with file watcher..."
+	@source .venv/bin/activate && python utils/file_watcher.py
+
+## help: Show this help message
 help:
-	@echo '----'
-	@echo 'format                       - run code formatters'
-	@echo 'lint                         - run linters'
-	@echo 'test                         - run unit tests'
-	@echo 'tests                        - run unit tests'
-	@echo 'test TEST_FILE=<test_file>   - run all tests in file'
-	@echo 'test_watch                   - run unit tests in watch mode'
+	@echo 'Usage:'
+	@echo '  make [target]'
+	@echo ''
+	@echo 'Targets:'
+	@awk '/^[a-zA-Z\-\_0-9]+:/ { \
+		helpMessage = match(lastLine, /^## (.*)/); \
+		if (helpMessage) { \
+			helpCommand = substr($$1, 0, index($$1, ":")-1); \
+			helpMessage = substr(lastLine, RSTART + 3, RLENGTH); \
+			printf "  %-20s %s\n", helpCommand, helpMessage; \
+		} \
+	} \
+	{ lastLine = $$0 }' $(MAKEFILE_LIST)
 
