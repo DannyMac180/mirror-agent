@@ -35,7 +35,7 @@ class IndexConfiguration:
         Literal["elastic", "elastic-local", "pinecone", "mongodb"],
         {"__template_metadata__": {"kind": "retriever"}},
     ] = field(
-        default="elastic",
+        default="pinecone",
         metadata={
             "description": "The vector store provider to use for retrieval. Options are 'elastic', 'pinecone', or 'mongodb'."
         },
@@ -80,7 +80,7 @@ class Configuration(IndexConfiguration):
     )
 
     response_model: Annotated[str, {"__template_metadata__": {"kind": "llm"}}] = field(
-        default="anthropic/claude-3-5-sonnet-20240620",
+        default="openai/gpt-4o",
         metadata={
             "description": "The language model used for generating responses. Should be in the form: provider/model-name."
         },
@@ -94,7 +94,7 @@ class Configuration(IndexConfiguration):
     )
 
     query_model: Annotated[str, {"__template_metadata__": {"kind": "llm"}}] = field(
-        default="anthropic/claude-3-haiku-20240307",
+        default="openai/gpt-4o",
         metadata={
             "description": "The language model used for processing and refining queries. Should be in the form: provider/model-name."
         },
