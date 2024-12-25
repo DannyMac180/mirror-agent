@@ -19,7 +19,7 @@ class IndexConfiguration:
     retriever provider choice, and search parameters.
     """
 
-    user_id: str = field(metadata={"description": "Unique identifier for the user."})
+    user_id: str = field(default="1", metadata={"description": "Unique identifier for the user."})
 
     embedding_model: Annotated[
         str,
@@ -27,7 +27,7 @@ class IndexConfiguration:
     ] = field(
         default="openai/text-embedding-3-small",
         metadata={
-            "description": "Name of the embedding model to use. Must be a valid embedding model name."
+            "description": "Name of the embedding model to use. Must be in the form: provider/model-name."
         },
     )
 
@@ -37,7 +37,7 @@ class IndexConfiguration:
     ] = field(
         default="pinecone",
         metadata={
-            "description": "The vector store provider to use for retrieval. Options are 'elastic', 'pinecone', or 'mongodb'."
+            "description": "The vector store provider to use for retrieval. Options are 'elastic', 'elastic-local', 'pinecone', or 'mongodb'."
         },
     )
 
