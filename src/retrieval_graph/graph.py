@@ -7,7 +7,8 @@ relevant documents, and formulating responses.
 """
 
 from datetime import datetime, timezone
-from typing import cast
+from typing import Literal, cast
+from enum import Enum
 
 from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage
@@ -21,13 +22,52 @@ from retrieval_graph.configuration import Configuration
 from retrieval_graph.state import InputState, State
 from retrieval_graph.utils import format_docs, get_message_text, load_chat_model
 
-# Define the function that calls the model
-
 
 class SearchQuery(BaseModel):
     """Search the indexed documents for a query."""
-
     query: str
+
+
+class RetrievalDecision(BaseModel):
+    """Decision on whether to retrieve documents."""
+    next: Literal["retrieve", "respond"]
+
+
+async def should_retrieve(
+    state: State, *, config: RunnableConfig
+) -> State:
+    """Decide whether to retrieve documents or respond directly.
+    
+    This function analyzes the user's query to determine if document retrieval
+    would be beneficial for generating a response.
+    """
+    configuration = Configuration.from_runnable_config(config)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are a wise assistant who decides whether a query requires retrieving personal documents and context to provide a good response.
+
+Respond with 'retrieve' if:
+- The query asks about personal information, history, or patterns
+- The query references past interactions or documents
+- The query requires specific context to answer effectively
+
+Respond with 'respond' if:
+- The query is general or philosophical in nature
+- The query is about the current interaction only
+- The query can be answered with general knowledge or wisdom
+
+Current query: {query}"""),
+    ])
+    
+    model = load_chat_model(configuration.query_model).with_structured_output(RetrievalDecision)
+    
+    message_value = await prompt.ainvoke(
+        {"query": get_message_text(state.messages[-1])},
+        config,
+    )
+    decision = await model.ainvoke(message_value, config)
+    
+    state.next = decision.next
+    return state
 
 
 async def generate_query(
@@ -119,7 +159,7 @@ async def respond(
     )
     model = load_chat_model(configuration.response_model)
 
-    retrieved_docs = format_docs(state.retrieved_docs)
+    retrieved_docs = format_docs(state.retrieved_docs) if state.retrieved_docs else ""
     message_value = await prompt.ainvoke(
         {
             "messages": state.messages,
@@ -133,22 +173,29 @@ async def respond(
     return {"messages": [response]}
 
 
-# Define a new graph (It's just a pipe)
-
-
+# Define the graph with conditional routing
 builder = StateGraph(State, input=InputState, config_schema=Configuration)
 
-builder.add_node(generate_query)
-builder.add_node(retrieve)
-builder.add_node(respond)
-builder.add_edge("__start__", "generate_query")
+# Add all nodes
+builder.add_node("should_retrieve", should_retrieve)
+builder.add_node("generate_query", generate_query)
+builder.add_node("retrieve", retrieve)
+builder.add_node("respond", respond)
+
+# Add conditional edges
+builder.add_edge("__start__", "should_retrieve")
+builder.add_conditional_edges(
+    "should_retrieve",
+    lambda state: state.next if hasattr(state, "next") else "retrieve",
+    {
+        "retrieve": "generate_query",
+        "respond": "respond",
+    },
+)
 builder.add_edge("generate_query", "retrieve")
 builder.add_edge("retrieve", "respond")
 
 # Finally, we compile it!
 # This compiles it into a graph you can invoke and deploy.
-graph = builder.compile(
-    interrupt_before=[],  # if you want to update the state before calling the tools
-    interrupt_after=[],
-)
+graph = builder.compile()
 graph.name = "RetrievalGraph"

@@ -157,5 +157,8 @@ class State(InputState):
     retrieved_docs: list[Document] = field(default_factory=list)
     """Populated by the retriever. This is a list of documents that the agent can reference."""
 
+    next: str = field(default="retrieve")
+    """The next node to route to in the graph."""
+
     # Feel free to add additional attributes to your state as needed.
     # Common examples include retrieved documents, extracted entities, API connections, etc.
