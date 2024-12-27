@@ -118,14 +118,26 @@ We are currently in Phase 2, with the basic project structure and configuration 
   - Ensure the agent can recall recent interactions and maintain state across multiple user turns.
 
 ### Phase 4: Retriever & Document Ingestion
-- [ ] **Implement Document Loader**  
-  - Provide UI or endpoints for the user to upload or link docs.
-  - Index or store them so they can be searched later by the agent.
-- [ ] **Retriever Node**  
-  - Add a node to the LangGraph that receives the user query and returns relevant doc chunks.
-  - Integrate bridging logic so the Mirror Agent can request references from the retriever node on-demand.
-- [ ] **Test Retrieval**  
-  - Confirm the agent can blend retrieved content into answers or reflections.
+- [x] **Implement Document Loader**  
+  - [x] Provide UI or endpoints for the user to upload or link docs.
+  - [x] Index or store them so they can be searched later by the agent.
+- [x] **Retriever Node**  
+  - [x] Add a node to the LangGraph that receives the user query and returns relevant doc chunks.
+  - [x] Integrate bridging logic so the Mirror Agent can request references from the retriever node on-demand.
+- [x] **Test Retrieval**  
+  - [x] Confirm the agent can blend retrieved content into answers or reflections.
+
+### Current Project Status
+We are currently transitioning from Phase 4 to Phase 5, with:
+1. Basic project structure and configuration in place
+2. Mirror Agent with StateGraph implemented
+3. Initial agent-user interaction loop working
+4. Retriever module set up and tested successfully
+
+The next immediate steps are:
+1. Implementing the reflection module
+2. Setting up self-reflection logic
+3. Creating specialized prompts for generating deeper questions
 
 ### Phase 5: Reflection Module
 - [ ] **Self-Reflection Logic**  
