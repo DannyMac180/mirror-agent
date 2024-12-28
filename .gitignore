@@ -163,3 +163,4 @@ cython_debug/
 .DS_Store
 uv.lock
 indexed_files.json
+full_code_snapshot.txt
