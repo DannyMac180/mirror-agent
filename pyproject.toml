@@ -10,9 +10,10 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "langgraph>=0.2.6",
-    "langchain-openai>=0.1.22",
-    "langchain-anthropic>=0.1.23",
     "langchain>=0.2.14",
+    "langchain-core>=0.1.31",
+    "langchain-openai>=0.0.5",
+    "langchain-anthropic>=0.1.23",
     "langchain-fireworks>=0.1.7",
     "python-dotenv>=1.0.1",
     "langchain-elasticsearch>=0.2.2,<0.3.0",

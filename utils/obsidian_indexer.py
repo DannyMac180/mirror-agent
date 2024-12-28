@@ -3,12 +3,12 @@ import json
 import time
 from pathlib import Path
 from typing import Dict, List
+import re
 
 from pinecone import Pinecone, ServerlessSpec
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
-from langchain_community.document_loaders import ObsidianLoader
 from langchain.docstore.document import Document
 
 # Load .env variables
@@ -23,6 +23,27 @@ OBSIDIAN_PATH = '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidia
 
 # Local JSON for tracking which files have been indexed 
 DB_RECORDS_PATH = Path(__file__).parent.parent / "indexed_files.json"
+
+def count_markdown_files(vault_path: str) -> int:
+    """Count all markdown files in the Obsidian vault.
+    
+    Args:
+        vault_path (str): Path to the Obsidian vault
+        
+    Returns:
+        int: Number of markdown files found
+    """
+    path = Path(vault_path).expanduser().resolve()
+    if not path.exists():
+        raise ValueError(f"Vault path does not exist: {vault_path}")
+        
+    count = 0
+    for root, _, files in os.walk(path):
+        count += sum(1 for f in files if f.endswith('.md'))
+    return count
+
+# Print the count when module is loaded
+print(f"\nFound {count_markdown_files(OBSIDIAN_PATH)} markdown files in Obsidian vault at: {OBSIDIAN_PATH}\n")
 
 def load_indexed_records() -> Dict[str, float]:
     """
@@ -51,6 +72,42 @@ def save_indexed_records(records: Dict[str, float]) -> None:
         print(f"Saved {len(records)} file records to {DB_RECORDS_PATH}")
     except Exception as e:
         print(f"Error saving index records: {e}")
+
+def enrich_obsidian_metadata(doc: Document) -> Document:
+    """Add Obsidian-specific metadata to the document."""
+    
+    # Get the original metadata
+    metadata = doc.metadata.copy()
+    
+    # Extract title from filename if not present
+    if "title" not in metadata and "source" in metadata:
+        metadata["title"] = Path(metadata["source"]).stem
+        
+    # Truncate content for metadata
+    content = doc.page_content[:500]  # First 500 chars for preview
+    
+    # Extract links and tags from content
+    links = re.findall(r'\[\[(.*?)\]\]', content)
+    tags = re.findall(r'#(\w+)', content)
+    
+    # Keep only essential metadata within size limits
+    filtered_metadata = {
+        "title": metadata.get("title", "")[:50],  # Limit title length
+        "path": str(Path(metadata.get("relative_path", "")).stem)[:100],  # Just filename
+        "links": [l[:50] for l in links[:5]],  # Keep only first 5 links, truncated
+        "tags": [t[:20] for t in tags[:5]],  # Keep only first 5 tags, truncated
+        "preview": content[:200]  # Shorter preview
+    }
+    
+    # Calculate total metadata size
+    metadata_str = str(filtered_metadata)
+    if len(metadata_str.encode('utf-8')) > 40000:  # Leave some buffer
+        # If still too large, further reduce
+        filtered_metadata["preview"] = filtered_metadata["preview"][:100]
+        filtered_metadata["links"] = filtered_metadata["links"][:2]
+        filtered_metadata["tags"] = filtered_metadata["tags"][:2]
+    
+    return Document(page_content=doc.page_content, metadata=filtered_metadata)
 
 def upsert_obsidian_vault(vault_path: str) -> None:
     """
@@ -96,7 +153,8 @@ def upsert_obsidian_vault(vault_path: str) -> None:
 
     # Load existing upsert records
     upsert_records = load_indexed_records()
-    is_first_run = not DB_RECORDS_PATH.exists()
+    is_first_run = len(upsert_records) == 0
+    print(f"First run: {is_first_run} (found {len(upsert_records)} existing records)")
 
     # Load documents from Obsidian
     input_path = Path(vault_path).expanduser().resolve()
@@ -104,21 +162,53 @@ def upsert_obsidian_vault(vault_path: str) -> None:
         raise ValueError(f"Vault path does not exist: {vault_path}")
 
     print(f"Loading markdown files from: {input_path}")
-    loader = ObsidianLoader(str(input_path), collect_metadata=True)
-    docs: List[Document] = loader.load()
-    print(f"Loaded {len(docs)} documents from vault.")
+    
+    # First get all markdown files in the vault
+    markdown_files = list(input_path.rglob("*.md"))
+    print(f"Found {len(markdown_files)} markdown files in vault.")
+    
+    # Load each file individually to avoid missing file issues
+    docs = []
+    for file_path in markdown_files:
+        try:
+            # Create a Document object with the file contents
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+            # Get relative path for metadata
+            rel_path = file_path.relative_to(input_path)
+            
+            # Create document with metadata
+            doc = Document(
+                page_content=content,
+                metadata={
+                    "source": str(file_path),
+                    "title": file_path.stem,
+                    "relative_path": str(rel_path)
+                }
+            )
+            docs.append(doc)
+            
+        except Exception as e:
+            print(f"Error loading {file_path}: {str(e)}")
+            continue
+            
+    print(f"Successfully loaded {len(docs)} documents.")
 
     docs_to_upsert = []
     updated_records = dict(upsert_records)  # copy so we don't mutate in-place
 
     # Check each doc for changes
+    print("\nProcessing documents...")
     for doc in docs:
         file_path = doc.metadata.get("source", "")
         if not file_path:
+            print(f"Skipping doc with no source path: {doc.page_content[:100]}...")
             continue
         
         path_obj = Path(file_path)
         if not path_obj.exists():
+            print(f"Skipping missing file: {file_path}")
             continue  # skip if the file is somehow missing
 
         mtime = path_obj.stat().st_mtime
@@ -126,20 +216,69 @@ def upsert_obsidian_vault(vault_path: str) -> None:
         
         # If it's the first run or the file has been modified, add it to upsert list
         if is_first_run or mtime > prev_mtime:
-            docs_to_upsert.append(doc)
-            updated_records[file_path] = mtime
+            try:
+                # Enrich metadata before adding to upsert list
+                enriched_doc = enrich_obsidian_metadata(doc)
+                # Verify metadata size
+                metadata_size = len(str(enriched_doc.metadata).encode('utf-8'))
+                if metadata_size > 40000:
+                    print(f"Warning: Document {file_path} has large metadata ({metadata_size} bytes), skipping...")
+                    continue
+                docs_to_upsert.append(enriched_doc)
+                updated_records[file_path] = mtime
+                if len(docs_to_upsert) % 100 == 0:
+                    print(f"Processed {len(docs_to_upsert)} documents...")
+            except Exception as e:
+                print(f"Error enriching metadata for {file_path}: {str(e)}")
+                continue
 
     # Upsert only if we have deltas
     if not docs_to_upsert:
         print("No new or changed markdown files to upsert.")
         return
 
-    print(f"Upserting {len(docs_to_upsert)} documents to Pinecone...")
-    # If you want chunking, do it here with a TextSplitter before add_documents()
-    vectorstore.add_documents(docs_to_upsert)
+    print(f"\nUpserting {len(docs_to_upsert)} documents to Pinecone...")
+    
+    # Batch documents to avoid rate limits
+    batch_size = 20  # Even smaller batch size
+    total_batches = (len(docs_to_upsert) + batch_size - 1) // batch_size
+    
+    for i in range(0, len(docs_to_upsert), batch_size):
+        batch = docs_to_upsert[i:i + batch_size]
+        current_batch = i // batch_size + 1
+        
+        print(f"Upserting batch {current_batch} of {total_batches} ({len(batch)} documents)...")
+        
+        max_retries = 3
+        current_retry = 0
+        success = False
+        
+        while not success and current_retry < max_retries:
+            try:
+                # Try to upsert the batch
+                vectorstore.add_documents(batch)
+                success = True
+                
+                # Update records after successful batch
+                save_indexed_records(updated_records)
+                print(f"Successfully upserted batch {current_batch}")
+                
+            except Exception as e:
+                current_retry += 1
+                print(f"Error upserting batch {current_batch} (attempt {current_retry}/{max_retries}): {str(e)}")
+                
+                if current_retry < max_retries:
+                    # Reduce batch size and try again
+                    batch = batch[:len(batch)//2]
+                    print(f"Retrying with smaller batch of {len(batch)} documents...")
+                    time.sleep(2)  # Longer cooldown between retries
+                else:
+                    print(f"Failed to upsert batch {current_batch} after {max_retries} attempts. Skipping...")
+                    continue
+                    
+        # Cooldown between batches
+        time.sleep(1)
 
-    # Update local DB
-    save_indexed_records(updated_records)
     print("Upsert complete. Updated local records.")
 
 # If you want to run this manually: 
