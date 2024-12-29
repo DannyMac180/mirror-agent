@@ -9,24 +9,33 @@ class SnapshotHandler(FileSystemEventHandler):
         self.last_snapshot_time = 0
         self.cooldown = 2  # Cooldown in seconds to prevent multiple rapid snapshots
         self.gitignore_spec = get_gitignore_spec()
+        self.project_root = Path(__file__).parent.parent
 
     def on_modified(self, event):
         # Skip directory modifications and non-file events
         if event.is_directory:
             return
             
-        # Skip gitignored files
-        if self.gitignore_spec and self.gitignore_spec.match_file(event.src_path):
-            return
+        # Convert path to relative for gitignore matching
+        try:
+            file_path = Path(event.src_path)
+            rel_path = file_path.relative_to(self.project_root)
             
-        current_time = time.time()
-        # Check if we're still in cooldown period
-        if current_time - self.last_snapshot_time < self.cooldown:
+            # Skip gitignored files
+            if self.gitignore_spec and self.gitignore_spec.match_file(str(rel_path)):
+                return
+                
+            current_time = time.time()
+            # Check if we're still in cooldown period
+            if current_time - self.last_snapshot_time < self.cooldown:
+                return
+                
+            print(f"\nFile change detected: {rel_path}")
+            create_code_snapshot()  # Snapshot entire project
+            self.last_snapshot_time = current_time
+        except ValueError:
+            # Path is not relative to project root, ignore it
             return
-            
-        print(f"\nFile change detected: {event.src_path}")
-        create_code_snapshot()  # Snapshot entire project
-        self.last_snapshot_time = current_time
 
 def start_watcher():
     """Start watching the project directory for changes and create snapshots."""
@@ -34,7 +43,7 @@ def start_watcher():
     observer = Observer()
     
     # Watch the entire project directory
-    project_root = Path().resolve()
+    project_root = Path(__file__).parent.parent
     print(f"Starting to watch project root: {project_root}")
     observer.schedule(event_handler, str(project_root), recursive=True)
 
