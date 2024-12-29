@@ -2,8 +2,6 @@
 
 This module provides functionality to create and manage retrievers for different
 vector store backends, specifically Elasticsearch, Pinecone, and MongoDB.
-
-The retrievers support filtering results by user_id to ensure data isolation between users.
 """
 
 import os
@@ -62,11 +60,7 @@ def make_elastic_retriever(
         embedding=embedding_model,
     )
 
-    search_kwargs = configuration.search_kwargs
-
-    search_filter = search_kwargs.setdefault("filter", [])
-    search_filter.append({"term": {"metadata.user_id": configuration.user_id}})
-    yield vstore.as_retriever(search_kwargs=search_kwargs)
+    yield vstore.as_retriever(search_kwargs=configuration.search_kwargs)
 
 
 @contextmanager
@@ -76,14 +70,10 @@ def make_pinecone_retriever(
     """Configure this agent to connect to a specific pinecone index."""
     from langchain_pinecone import PineconeVectorStore
 
-    search_kwargs = configuration.search_kwargs
-
-    search_filter = search_kwargs.setdefault("filter", {})
-    search_filter.update({"user_id": configuration.user_id})
     vstore = PineconeVectorStore.from_existing_index(
         os.environ["PINECONE_INDEX_NAME"], embedding=embedding_model
     )
-    yield vstore.as_retriever(search_kwargs=search_kwargs)
+    yield vstore.as_retriever(search_kwargs=configuration.search_kwargs)
 
 
 @contextmanager
@@ -98,10 +88,7 @@ def make_mongodb_retriever(
         namespace="langgraph_retrieval_agent.default",
         embedding=embedding_model,
     )
-    search_kwargs = configuration.search_kwargs
-    pre_filter = search_kwargs.setdefault("pre_filter", {})
-    pre_filter["user_id"] = {"$eq": configuration.user_id}
-    yield vstore.as_retriever(search_kwargs=search_kwargs)
+    yield vstore.as_retriever(search_kwargs=configuration.search_kwargs)
 
 
 @contextmanager
@@ -111,9 +98,7 @@ def make_retriever(
     """Create a retriever for the agent, based on the current configuration."""
     configuration = IndexConfiguration.from_runnable_config(config)
     embedding_model = make_text_encoder(configuration.embedding_model)
-    user_id = configuration.user_id
-    if not user_id:
-        raise ValueError("Please provide a valid user_id in the configuration.")
+    
     match configuration.retriever_provider:
         case "elastic" | "elastic-local":
             with make_elastic_retriever(configuration, embedding_model) as retriever:
