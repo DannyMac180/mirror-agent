@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 from firecrawl import FirecrawlApp
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -87,12 +87,75 @@ def fetch_direct(url: str) -> str:
     response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     soup = BeautifulSoup(response.text, "html.parser")
     
+    # Remove unwanted elements
+    for element in soup.find_all(class_=["feedback", "nav", "footer", "sidebar", "pagination", "breadcrumb", "toc"]):
+        element.decompose()
+    
+    # Remove script, style tags and feedback elements
+    for element in soup.find_all(['script', 'style']):
+        element.decompose()
+    
+    # Remove feedback section and other unwanted elements by text content
+    for element in soup.find_all(lambda tag: tag.string and any(x in str(tag.string).lower() for x in ['feedback', 'was this page helpful', 'last modified', 'yes', 'no'])):
+        element.decompose()
+        
     # Extract main content
     content = soup.find("article") or soup.find("main") or soup.find("div", class_="content")
     if not content:
         return response.text
-        
-    return content.get_text()
+    
+    # Process content in order of appearance
+    formatted_content = []
+    seen_content = set()
+    
+    def clean_text(text):
+        """Clean and normalize text content."""
+        # Remove extra whitespace and normalize spaces
+        text = ' '.join(text.split())
+        # Remove common duplicated content markers
+        text = text.replace('Documentation Documentation', 'Documentation')
+        return text.strip()
+    
+    def add_content(text, prefix=""):
+        """Helper to add unique content with optional prefix."""
+        text = clean_text(text)
+        if text and text not in seen_content and len(text) > 1:
+            seen_content.add(text)
+            if prefix:
+                formatted_content.append(f"\n{prefix}{text}\n")
+            else:
+                formatted_content.append(text + "\n")
+    
+    # First pass: Extract main description
+    main_desc = content.find('p')
+    if main_desc:
+        add_content(main_desc.get_text())
+    
+    # Second pass: Process headers and content in order
+    for element in content.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'ul', 'ol']):
+        # Skip empty or very short elements
+        if not element.get_text(strip=True) or len(element.get_text(strip=True)) < 2:
+            continue
+            
+        # Handle headers
+        if element.name.startswith('h'):
+            level = int(element.name[1])
+            text = element.get_text(strip=True)
+            if text:
+                add_content(text, '#' * level + ' ')
+        # Handle paragraphs and other content
+        elif element.name in ['p', 'div']:
+            text = element.get_text(separator=' ', strip=True)
+            if text and not any(text.lower() in seen.lower() for seen in seen_content):
+                add_content(text)
+        # Handle lists
+        elif element.name in ['ul', 'ol']:
+            for item in element.find_all('li'):
+                text = item.get_text(strip=True)
+                if text:
+                    add_content(f"- {text}")
+    
+    return "\n".join(formatted_content)
 
 def generate_docs(topic_or_url: str, output_file: Optional[str] = None) -> str:
     """Generate documentation by crawling from a URL or searching for docs.
