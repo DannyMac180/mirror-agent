@@ -4,7 +4,7 @@
         {
             "label": "Start File Watcher",
             "type": "shell",
-            "command": "${command:python.interpreterPath}",
+            "command": "python",
             "args": [
                 "utils/file_watcher.py"
             ],
@@ -13,13 +13,29 @@
             "runOptions": {
                 "runOn": "folderOpen"
             },
-            "presentation": {
-                "reveal": "always",
-                "panel": "new"
+            "options": {
+                "env": {
+                    "PYTHONPATH": "${workspaceFolder}"
+                }
+            }
+        },
+        {
+            "label": "Start Obsidian Monitor",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "-m",
+                "utils.obsidian_monitor"
+            ],
+            "isBackground": true,
+            "problemMatcher": [],
+            "runOptions": {
+                "runOn": "folderOpen"
             },
-            "group": {
-                "kind": "build",
-                "isDefault": true
+            "options": {
+                "env": {
+                    "PYTHONPATH": "${workspaceFolder}"
+                }
             }
         }
     ]

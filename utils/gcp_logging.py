@@ -18,6 +18,23 @@ class MirrorAgentLogger:
         self.logger = self.client.logger(log_name)
         self.start_time = None
         
+    def log_info(self, message: str, context: Optional[Dict[str, Any]] = None):
+        """Log an info message with context.
+        
+        Args:
+            message: Info message
+            context: Additional context
+        """
+        info_data = {
+            'event': 'info',
+            'message': message,
+            'timestamp': time.time()
+        }
+        if context:
+            info_data.update(context)
+            
+        self.logger.log_struct(info_data, severity='INFO')
+        
     def log_start_indexing(self, vault_path: str, total_files: int):
         """Log the start of an indexing operation.
         
@@ -131,6 +148,10 @@ if __name__ == "__main__":
     logger = get_logger()
     if logger:
         # Test various logging functions
+        logger.log_info("Starting test run", {
+            "test_type": "manual",
+            "environment": "development"
+        })
         logger.log_start_indexing("/path/to/vault", 100)
         logger.log_performance_metrics({
             "batch_processing_time": 1.5,
