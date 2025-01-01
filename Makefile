@@ -86,10 +86,17 @@ docker_tests:
 extended_tests:
 	pytest tests -v
 
-## start: Start the project with file watcher
+## start: Start the project with file watcher and Obsidian monitor
 start:
 	@echo "Starting project with file watcher..."
-	@source .venv/bin/activate && python utils/file_watcher.py
+	@source .venv/bin/activate && python utils/file_watcher.py &
+	@echo "Starting Obsidian monitor..."
+	@scripts/start_monitor.sh
+
+## stop: Stop the Obsidian monitor
+stop:
+	@echo "Stopping Obsidian monitor..."
+	@scripts/stop_monitor.sh
 
 ## help: Show this help message
 help:

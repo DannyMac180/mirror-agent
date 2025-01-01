@@ -22,11 +22,7 @@
         {
             "label": "Start Obsidian Monitor",
             "type": "shell",
-            "command": "python",
-            "args": [
-                "-m",
-                "utils.obsidian_monitor"
-            ],
+            "command": "scripts/start_monitor.sh",
             "isBackground": true,
             "problemMatcher": [],
             "runOptions": {
@@ -37,6 +33,13 @@
                     "PYTHONPATH": "${workspaceFolder}"
                 }
             }
+        },
+        {
+            "label": "Stop Obsidian Monitor",
+            "type": "shell",
+            "command": "scripts/stop_monitor.sh",
+            "isBackground": false,
+            "problemMatcher": []
         }
     ]
 } 
