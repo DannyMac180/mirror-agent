@@ -1,1 +1,2 @@
 google-cloud-logging>=3.9.0 
+tenacity>=8.2.3 
