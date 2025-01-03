@@ -11,63 +11,80 @@ import Levenshtein  # pip install python-Levenshtein
 
 from retrieval_graph import graph  # Your retrieval pipeline
 from langchain_core.runnables import RunnableConfig
+from retrieval_graph.retrieval import make_pinecone_retriever
 
 def load_data(json_path: str):
     with open(json_path, "r") as f:
         return json.load(f)
 
 @weave.op()
-async def run_retrieval(question: str) -> dict:
+async def evaluate_retrieval_only(question: str, expected: str) -> dict:
+    """Evaluate if the expected answer appears in the top-K retrieved documents."""
     try:
-        config = RunnableConfig(
-            configurable={
-                "user_id": "eval_user",
-                "retriever_provider": "pinecone",
-            }
+        # Get Pinecone retriever
+        retriever = await make_pinecone_retriever(
+            user_id="eval_user",  # Using a fixed user ID for evaluation
+            k=5  # Top-K documents to retrieve
         )
         
-        # Use ainvoke instead of invoke
-        result = await graph.ainvoke(
-            {"messages": [("user", question)]},
-            config
-        )
+        # Retrieve documents
+        docs = await retriever.aget_relevant_documents(question)
         
-        if not result or "messages" not in result:
-            print(f"Warning: No result for question: {question}")
-            return {"generated_text": ""}
-            
-        final_response = result["messages"][-1].content
-        return {"generated_text": final_response}
+        # Check if expected answer appears in any retrieved document
+        expected_text = expected.strip().lower()
+        found = False
+        best_score = 0
+        
+        for doc in docs:
+            doc_text = doc.page_content.strip().lower()
+            # Check for exact containment
+            if expected_text in doc_text:
+                found = True
+                best_score = 1.0
+                break
+            # Fallback to Levenshtein similarity for fuzzy matching
+            score = 1 - (Levenshtein.distance(expected_text, doc_text) / max(len(expected_text), len(doc_text)))
+            best_score = max(best_score, score)
+            if score > 0.8:  # High similarity threshold
+                found = True
+                break
+        
+        return {
+            "retrieval_match": found,
+            "retrieval_score": best_score,
+            "num_docs": len(docs)
+        }
+        
     except Exception as e:
-        print(f"Error in retrieval: {str(e)}")
-        return {"generated_text": ""}
+        print(f"Error in retrieval evaluation: {str(e)}")
+        return {
+            "retrieval_match": False,
+            "retrieval_score": 0.0,
+            "num_docs": 0
+        }
 
 @weave.op()
-def match_score(expected: str, model_output: dict) -> dict:
+def retrieval_scorer(expected: str, model_output: dict) -> dict:
+    """Score the retrieval results."""
     try:
-        gen_text = model_output.get('generated_text', '').strip().lower() if model_output else ''
-        exp_text = expected.strip().lower() if expected else ''
-        return {"exact_match": gen_text == exp_text}
+        return {
+            "found_doc": model_output.get("retrieval_match", False),
+            "retrieval_score": model_output.get("retrieval_score", 0.0),
+            "num_docs": model_output.get("num_docs", 0)
+        }
     except Exception as e:
-        print(f"Error in match_score: {str(e)}")
-        return {"exact_match": False}
-
-@weave.op()
-def levenshtein_score(expected: str, model_output: dict) -> dict:
-    try:
-        gen_text = model_output.get('generated_text', '') if model_output else ''
-        exp_text = expected if expected else ''
-        distance = Levenshtein.distance(exp_text.strip(), gen_text.strip())
-        return {"levenshtein_distance": distance}
-    except Exception as e:
-        print(f"Error in levenshtein_score: {str(e)}")
-        return {"levenshtein_distance": -1}
+        print(f"Error in retrieval scoring: {str(e)}")
+        return {
+            "found_doc": False,
+            "retrieval_score": 0.0,
+            "num_docs": 0
+        }
 
 async def main():
     weave.init("mirror-agent-evals")
 
     data = load_data("data/synthetic_qa_dataset.json")
-    subset_data = data[:5]
+    subset_data = data[:5]  # Testing with first 5 examples
 
     examples = []
     for item in subset_data:
@@ -76,18 +93,20 @@ async def main():
             "expected": item["answer"]
         })
 
-    evaluation = Evaluation(
+    # Create retrieval-only evaluation
+    retrieval_evaluation = Evaluation(
         dataset=examples,
-        scorers=[match_score, levenshtein_score],
-        name="Test Run with First 5 QAs"
+        scorers=[retrieval_scorer],
+        name="Retrieval-only-check"
     )
 
-    await evaluation.evaluate(
-        run_retrieval,
-        __weave={"display_name": "Retrieval Pipeline Test Run"}
+    print("\nRunning retrieval-only evaluation...")
+    await retrieval_evaluation.evaluate(
+        evaluate_retrieval_only,
+        __weave={"display_name": "Retrieval Pipeline Baseline"}
     )
 
-    print("Evaluation complete. View results in Weave UI or by running weave.watch().")
+    print("Retrieval evaluation complete. View results in Weave UI.")
 
 if __name__ == "__main__":
     asyncio.run(main())
