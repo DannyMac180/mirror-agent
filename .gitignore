@@ -164,3 +164,8 @@ cython_debug/
 uv.lock
 indexed_files.json
 full_code_snapshot.txt
+
+# Data files
+data/
+data/synthetic_qa_dataset.json
+data/indexed_files.json

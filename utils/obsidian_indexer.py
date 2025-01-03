@@ -28,7 +28,7 @@ INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "mirror-agent")
 OBSIDIAN_PATH = '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse'
 
 # Local JSON for tracking which files have been indexed 
-DB_RECORDS_PATH = Path(__file__).parent.parent / "indexed_files.json"
+DB_RECORDS_PATH = Path(__file__).parent.parent / "data" / "indexed_files.json"
 
 def count_markdown_files(vault_path: str) -> int:
     """Count all markdown files in the Obsidian vault.
