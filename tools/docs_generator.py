@@ -5,13 +5,16 @@ Uses Firecrawl for deep crawling and falls back to direct fetching if no API key
 """
 
 import os
+import sys
 from typing import Optional, List
 from urllib.parse import urlparse
+from pathlib import Path
 
 from firecrawl import FirecrawlApp
 import requests
 from bs4 import BeautifulSoup, NavigableString
 from dotenv import load_dotenv
+from langchain_community.document_loaders import FireCrawlLoader
 
 # Load environment variables
 load_dotenv()
@@ -204,17 +207,57 @@ def generate_docs(topic_or_url: str, output_file: Optional[str] = None) -> str:
     
     return output_file
 
-if __name__ == "__main__":
-    import sys
+def main():
     if len(sys.argv) != 2:
-        print("Usage: python docs_generator.py <topic_or_url>")
-        print("Examples:")
-        print("  python docs_generator.py 'langchain pinecone integration'")
-        print("  python docs_generator.py https://docs.example.com/api")
+        print("Usage: python docs_generator.py <url>")
         sys.exit(1)
         
-    topic_or_url = sys.argv[1]
-    output_file = generate_docs(topic_or_url)
-    print(f"Generated docs at: {output_file}")
-    if not app:
-        print("\nNote: Install Firecrawl API key in .env for better results:")
+    url = sys.argv[1]
+    try:
+        # Initialize FireCrawl loader in crawl mode
+        loader = FireCrawlLoader(
+            api_key=os.getenv("FIRECRAWL_API_KEY"),
+            url=url,
+            mode="crawl"  # Use crawl mode to get all subpages
+        )
+        
+        # Load all pages
+        print(f"Crawling {url} and its subpages...")
+        pages = loader.load()
+        
+        # Combine all page content
+        combined_content = []
+        for page in pages:
+            combined_content.append(page.page_content)
+            
+        full_content = "\n\n".join(combined_content)
+        
+        # Create markdown file
+        output_filename = url.replace("https://", "").replace("http://", "").replace("/", "_").replace(".", "_") + "_docs.md"
+        output_path = Path("docs") / output_filename
+        
+        with open(output_path, "w") as f:
+            f.write(f"# {url} Documentation\n\n")
+            f.write(f"Source: {url}\n\n")
+            f.write(full_content)
+            
+        print(f"Generated docs at: {output_path}")
+        
+    except Exception as e:
+        print(f"Firecrawl failed: {str(e)}. Falling back to direct fetch...")
+        # Fallback to direct fetch
+        content = fetch_direct(url)
+        
+        # Create markdown file
+        output_filename = url.replace("https://", "").replace("http://", "").replace("/", "_").replace(".", "_") + "_docs.md"
+        output_path = Path("docs") / output_filename
+        
+        with open(output_path, "w") as f:
+            f.write(f"# {url} Documentation\n\n")
+            f.write(f"Source: {url}\n\n")
+            f.write(content)
+            
+        print(f"Generated docs at: {output_path}")
+
+if __name__ == "__main__":
+    main()

@@ -1,2 +1,3 @@
 google-cloud-logging>=3.9.0 
 tenacity>=8.2.3 
+langchain-community>=0.0.24 
