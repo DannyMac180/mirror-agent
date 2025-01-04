@@ -7,13 +7,13 @@ import signal
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
-from .gcp_logging import get_logger
+from . import gcp_logging
 
 # Load environment variables
 load_dotenv()
 
 # Initialize GCP logger
-logger = get_logger("mirror-agent")
+logger = gcp_logging.get_logger("mirror-agent")
 
 # Check if running in VS Code
 IN_VSCODE = os.environ.get('VSCODE_CLI', False) or os.environ.get('TERM_PROGRAM') == 'vscode'

@@ -22,7 +22,11 @@
         {
             "label": "Start Obsidian Monitor",
             "type": "shell",
-            "command": "scripts/start_monitor.sh",
+            "command": "python",
+            "args": [
+                "-m",
+                "utils.obsidian_monitor"
+            ],
             "isBackground": true,
             "problemMatcher": [],
             "runOptions": {
@@ -37,7 +41,11 @@
         {
             "label": "Stop Obsidian Monitor",
             "type": "shell",
-            "command": "scripts/stop_monitor.sh",
+            "command": "pkill",
+            "args": [
+                "-f",
+                "obsidian_monitor.py"
+            ],
             "isBackground": false,
             "problemMatcher": []
         }
