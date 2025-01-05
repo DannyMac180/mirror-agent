@@ -9,9 +9,10 @@ from weave import Evaluation
 
 import Levenshtein  # pip install python-Levenshtein
 
-from retrieval_graph import graph  # Your retrieval pipeline
 from langchain_core.runnables import RunnableConfig
-from retrieval_graph.retrieval import make_pinecone_retriever
+from retrieval_graph.configuration import IndexConfiguration
+from retrieval_graph import graph  # Your retrieval pipeline
+from retrieval_graph.retrieval import make_retriever
 
 def load_data(json_path: str):
     with open(json_path, "r") as f:
@@ -21,13 +22,20 @@ def load_data(json_path: str):
 async def evaluate_retrieval_only(question: str, expected: str) -> dict:
     """Evaluate if the expected answer appears in the top-K retrieved documents."""
     try:
-        # Get Pinecone retriever without user filtering
-        retriever = await make_pinecone_retriever(
-            k=5  # Top-K documents to retrieve
+        # Construct a config that matches how your docs were indexed
+        config = RunnableConfig(
+            configurable={
+                "user_id": "1",
+                "retriever_provider": "pinecone",
+                "embedding_model": "openai/text-embedding-3-small",
+                "search_kwargs": {"k": 5}
+            }
         )
-        
-        # Retrieve documents
-        docs = await retriever.aget_relevant_documents(question)
+
+        # Use the shared make_retriever(...) which
+        # calls make_pinecone_retriever internally.
+        with make_retriever(config) as retriever:
+            docs = await retriever.ainvoke(question, config)
         
         # Check if expected answer appears in any retrieved document
         expected_text = expected.strip().lower()
