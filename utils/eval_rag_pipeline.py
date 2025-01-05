@@ -21,9 +21,8 @@ def load_data(json_path: str):
 async def evaluate_retrieval_only(question: str, expected: str) -> dict:
     """Evaluate if the expected answer appears in the top-K retrieved documents."""
     try:
-        # Get Pinecone retriever
+        # Get Pinecone retriever without user filtering
         retriever = await make_pinecone_retriever(
-            user_id="eval_user",  # Using a fixed user ID for evaluation
             k=5  # Top-K documents to retrieve
         )
         
