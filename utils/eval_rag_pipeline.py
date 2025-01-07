@@ -42,24 +42,35 @@ async def evaluate_retrieval_only(question: str, expected: str) -> dict:
         found = False
         best_score = 0
         
+        # Prepare document previews
+        doc_previews = []
         for doc in docs:
             doc_text = doc.page_content.strip().lower()
+            title = doc.metadata.get('title', 'Untitled')
+            preview = doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+            
             # Check for exact containment
             if expected_text in doc_text:
                 found = True
                 best_score = 1.0
-                break
-            # Fallback to Levenshtein similarity for fuzzy matching
-            score = 1 - (Levenshtein.distance(expected_text, doc_text) / max(len(expected_text), len(doc_text)))
-            best_score = max(best_score, score)
-            if score > 0.8:  # High similarity threshold
-                found = True
-                break
+            else:
+                # Fallback to Levenshtein similarity for fuzzy matching
+                score = 1 - (Levenshtein.distance(expected_text, doc_text) / max(len(expected_text), len(doc_text)))
+                best_score = max(best_score, score)
+                if score > 0.8:  # High similarity threshold
+                    found = True
+            
+            doc_previews.append({
+                "title": title,
+                "preview": preview,
+                "similarity_score": best_score
+            })
         
         return {
             "retrieval_match": found,
             "retrieval_score": best_score,
-            "num_docs": len(docs)
+            "num_docs": len(docs),
+            "retrieved_docs": doc_previews
         }
         
     except Exception as e:
@@ -67,7 +78,8 @@ async def evaluate_retrieval_only(question: str, expected: str) -> dict:
         return {
             "retrieval_match": False,
             "retrieval_score": 0.0,
-            "num_docs": 0
+            "num_docs": 0,
+            "retrieved_docs": []
         }
 
 @weave.op()
@@ -77,14 +89,16 @@ def retrieval_scorer(expected: str, model_output: dict) -> dict:
         return {
             "found_doc": model_output.get("retrieval_match", False),
             "retrieval_score": model_output.get("retrieval_score", 0.0),
-            "num_docs": model_output.get("num_docs", 0)
+            "num_docs": model_output.get("num_docs", 0),
+            "retrieved_docs": model_output.get("retrieved_docs", [])
         }
     except Exception as e:
         print(f"Error in retrieval scoring: {str(e)}")
         return {
             "found_doc": False,
             "retrieval_score": 0.0,
-            "num_docs": 0
+            "num_docs": 0,
+            "retrieved_docs": []
         }
 
 async def main():
