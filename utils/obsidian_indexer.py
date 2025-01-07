@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from langchain.docstore.document import Document
+from langchain.text_splitter import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 from utils.gcp_logging import get_logger
 
@@ -19,6 +20,84 @@ load_dotenv()
 
 # Initialize GCP logger
 logger = get_logger("mirror-agent")
+
+# Chunking configuration
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 100
+
+def chunk_markdown(content: str, source_path: str) -> List[Document]:
+    """Split markdown content into chunks while preserving header context.
+    
+    Args:
+        content: Raw markdown content
+        source_path: Path to source file for metadata
+        
+    Returns:
+        List of Document objects with chunks
+    """
+    try:
+        # First split by headers
+        headers_to_split_on = [
+            ("#", "header1"),
+            ("##", "header2"),
+            ("###", "header3"),
+        ]
+        
+        markdown_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=headers_to_split_on,
+            strip_headers=False,
+            return_each_line=False
+        )
+        header_splits = markdown_splitter.split_text(content)
+        
+        # Then split large sections further by size
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+            separators=["\n\n", "\n", " ", ""]
+        )
+        
+        final_chunks = []
+        for doc in header_splits:
+            # Get header context
+            header_context = {
+                k: v for k, v in doc.metadata.items() 
+                if k.startswith('header')
+            }
+            
+            # Split large sections further
+            if len(doc.page_content) > CHUNK_SIZE:
+                smaller_chunks = text_splitter.split_text(doc.page_content)
+                for i, chunk in enumerate(smaller_chunks):
+                    final_chunks.append(
+                        Document(
+                            page_content=chunk,
+                            metadata={
+                                "source": source_path,
+                                "chunk_index": i,
+                                **header_context
+                            }
+                        )
+                    )
+            else:
+                doc.metadata["source"] = source_path
+                final_chunks.append(doc)
+                
+        if logger:
+            logger.log_info(f"Split document into {len(final_chunks)} chunks", {
+                "source": source_path,
+                "num_chunks": len(final_chunks)
+            })
+            
+        return final_chunks
+        
+    except Exception as e:
+        if logger:
+            logger.log_error(e, {
+                "context": "chunking_markdown",
+                "source": source_path
+            })
+        raise
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_ENV = os.getenv("PINECONE_ENV", "gcp-starter")
@@ -160,12 +239,14 @@ def enrich_obsidian_metadata(doc: Document) -> Document:
 def upsert_obsidian_vault(vault_path: str) -> None:
     """
     1. Loads all markdown from an Obsidian vault
-    2. Upserts only the changed/new files to Pinecone
-    3. Tracks files with 'indexed_files.json' so we only upsert deltas next time
+    2. Chunks content preserving header context
+    3. Upserts only the changed/new files to Pinecone
+    4. Tracks files with 'indexed_files.json' so we only upsert deltas next time
     """
     start_time = time.time()
     success = False
     processed_files = 0
+    total_chunks = 0
 
     try:
         # Initialize Pinecone
@@ -221,113 +302,77 @@ def upsert_obsidian_vault(vault_path: str) -> None:
         markdown_files = list(input_path.rglob("*.md"))
         print(f"Found {len(markdown_files)} markdown files in vault.")
         
-        # Load each file individually to avoid missing file issues
-        docs = []
+        # Load and chunk each file individually
+        chunks_to_upsert = []
+        updated_records = dict(upsert_records)  # copy so we don't mutate in-place
+
+        # Check each file for changes
+        print("\nProcessing documents...")
         for file_path in markdown_files:
             try:
-                # Create a Document object with the file contents
+                # Check if file needs processing
+                mtime = file_path.stat().st_mtime
+                prev_mtime = upsert_records.get(str(file_path), 0.0)
+                
+                if not is_first_run and mtime <= prev_mtime:
+                    continue  # Skip unchanged files
+                    
+                # Read and chunk the file
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                    
-                # Get relative path for metadata
+                
+                # Get chunks with header context
                 rel_path = file_path.relative_to(input_path)
+                chunks = chunk_markdown(content, str(rel_path))
                 
-                # Create document with metadata
-                doc = Document(
-                    page_content=content,
-                    metadata={
-                        "source": str(file_path),
-                        "title": file_path.stem,
-                        "relative_path": str(rel_path)
-                    }
-                )
-                docs.append(doc)
+                # Enrich metadata for each chunk
+                for chunk in chunks:
+                    try:
+                        enriched_chunk = enrich_obsidian_metadata(chunk)
+                        chunks_to_upsert.append(enriched_chunk)
+                    except Exception as e:
+                        print(f"Error enriching chunk metadata for {file_path}: {str(e)}")
+                        if logger:
+                            logger.log_error(e, {
+                                "context": "enriching_chunk_metadata",
+                                "file_path": str(file_path)
+                            })
+                        continue
                 
+                updated_records[str(file_path)] = mtime
+                total_chunks += len(chunks)
+                
+                if len(chunks_to_upsert) % 100 == 0:
+                    print(f"Processed {len(chunks_to_upsert)} chunks...")
+                    if logger:
+                        logger.log_performance_metrics(get_performance_metrics())
+                        
             except Exception as e:
-                print(f"Error loading {file_path}: {str(e)}")
+                print(f"Error processing {file_path}: {str(e)}")
                 if logger:
                     logger.log_error(e, {
-                        "context": "loading_document",
+                        "context": "processing_file",
                         "file_path": str(file_path)
                     })
                 continue
-                
-        print(f"Successfully loaded {len(docs)} documents.")
-
-        docs_to_upsert = []
-        updated_records = dict(upsert_records)  # copy so we don't mutate in-place
-
-        # Check each doc for changes
-        print("\nProcessing documents...")
-        for doc in docs:
-            file_path = doc.metadata.get("source", "")
-            if not file_path:
-                print(f"Skipping doc with no source path: {doc.page_content[:100]}...")
-                if logger:
-                    logger.log_warning("Skipping document with no source path", {
-                        "content_preview": doc.page_content[:100]
-                    })
-                continue
-            
-            path_obj = Path(file_path)
-            if not path_obj.exists():
-                print(f"Skipping missing file: {file_path}")
-                if logger:
-                    logger.log_warning("Skipping missing file", {
-                        "file_path": file_path
-                    })
-                continue  # skip if the file is somehow missing
-
-            mtime = path_obj.stat().st_mtime
-            prev_mtime = upsert_records.get(file_path, 0.0)
-            
-            # If it's the first run or the file has been modified, add it to upsert list
-            if is_first_run or mtime > prev_mtime:
-                try:
-                    # Enrich metadata before adding to upsert list
-                    enriched_doc = enrich_obsidian_metadata(doc)
-                    # Verify metadata size
-                    metadata_size = len(str(enriched_doc.metadata).encode('utf-8'))
-                    if metadata_size > 40000:
-                        print(f"Warning: Document {file_path} has large metadata ({metadata_size} bytes), skipping...")
-                        if logger:
-                            logger.log_warning("Document metadata too large", {
-                                "file_path": file_path,
-                                "metadata_size": metadata_size
-                            })
-                        continue
-                    docs_to_upsert.append(enriched_doc)
-                    updated_records[file_path] = mtime
-                    if len(docs_to_upsert) % 100 == 0:
-                        print(f"Processed {len(docs_to_upsert)} documents...")
-                        if logger:
-                            logger.log_performance_metrics(get_performance_metrics())
-                except Exception as e:
-                    print(f"Error enriching metadata for {file_path}: {str(e)}")
-                    if logger:
-                        logger.log_error(e, {
-                            "context": "enriching_metadata",
-                            "file_path": file_path
-                        })
-                    continue
 
         # Upsert only if we have deltas
-        if not docs_to_upsert:
+        if not chunks_to_upsert:
             print("No new or changed markdown files to upsert.")
             success = True
             return
 
-        print(f"\nUpserting {len(docs_to_upsert)} documents to Pinecone...")
+        print(f"\nUpserting {len(chunks_to_upsert)} chunks to Pinecone...")
         
-        # Batch documents to avoid rate limits
+        # Batch chunks to avoid rate limits
         batch_size = 20  # Even smaller batch size
-        total_batches = (len(docs_to_upsert) + batch_size - 1) // batch_size
+        total_batches = (len(chunks_to_upsert) + batch_size - 1) // batch_size
         
-        for i in range(0, len(docs_to_upsert), batch_size):
-            batch = docs_to_upsert[i:i + batch_size]
+        for i in range(0, len(chunks_to_upsert), batch_size):
+            batch = chunks_to_upsert[i:i + batch_size]
             current_batch = i // batch_size + 1
             
-            print(f"Upserting batch {current_batch} of {total_batches} ({len(batch)} documents)...")
+            print(f"Upserting batch {current_batch} of {total_batches} ({len(batch)} chunks)...")
             try:
                 vectorstore.add_documents(batch)
                 processed_files += len(batch)
@@ -341,7 +386,7 @@ def upsert_obsidian_vault(vault_path: str) -> None:
                 print(f"Error upserting batch {current_batch}: {str(e)}")
                 if logger:
                     logger.log_batch_failure(
-                        [doc.metadata.get("source", "unknown") for doc in batch],
+                        [doc.metadata.get('source', 'unknown') for doc in batch],
                         e
                     )
                 continue
@@ -349,6 +394,11 @@ def upsert_obsidian_vault(vault_path: str) -> None:
         # Save the updated records
         save_indexed_records(updated_records)
         success = True
+        
+        print(f"\nProcessing complete:")
+        print(f"- Total files processed: {len(markdown_files)}")
+        print(f"- Total chunks created: {total_chunks}")
+        print(f"- Total chunks upserted: {processed_files}")
         
     except Exception as e:
         print(f"Error during indexing: {str(e)}")
