@@ -135,10 +135,14 @@ print(f"\nFound {total_files} markdown files in Obsidian vault at: {OBSIDIAN_PAT
 if logger:
     logger.log_start_indexing(OBSIDIAN_PATH, total_files)
 
-def load_indexed_records() -> Dict[str, float]:
+def load_indexed_records() -> Dict[str, Dict[str, Any]]:
     """
-    Loads the dictionary { file_path: last_modified_timestamp } 
-    from a JSON file. If the file doesn't exist or is invalid, returns an empty dict.
+    Loads the dictionary { 
+        file_path: {
+            "last_modified": timestamp,
+            "chunk_ids": [list of pinecone ids]
+        }
+    } from a JSON file. If the file doesn't exist or is invalid, returns an empty dict.
     """
     if not DB_RECORDS_PATH.exists():
         print("No existing index records found. This appears to be the first run.")
@@ -150,6 +154,13 @@ def load_indexed_records() -> Dict[str, float]:
     try:
         with open(DB_RECORDS_PATH, "r", encoding="utf-8") as f:
             records = json.load(f)
+            # Convert old format if needed
+            for path, value in records.items():
+                if isinstance(value, (int, float)):
+                    records[path] = {
+                        "last_modified": value,
+                        "chunk_ids": []
+                    }
             print(f"Loaded {len(records)} existing file records.")
             return records
     except Exception as e:
@@ -161,14 +172,24 @@ def load_indexed_records() -> Dict[str, float]:
             })
         return {}
 
-def save_indexed_records(records: Dict[str, float]) -> None:
+def save_indexed_records(records: Dict[str, Dict[str, Any]]) -> None:
     """
-    Saves the dictionary of file->timestamp so we can track changes for the next run.
+    Saves the indexed files dictionary to a JSON file.
+    
+    Args:
+        records: Dictionary mapping file paths to their record info:
+                {
+                    "last_modified": timestamp,
+                    "chunk_ids": [list of pinecone ids]
+                }
     """
     try:
+        # Ensure the directory exists
+        DB_RECORDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        
         with open(DB_RECORDS_PATH, "w", encoding="utf-8") as f:
             json.dump(records, f, indent=2)
-        print(f"Saved {len(records)} file records to {DB_RECORDS_PATH}")
+            
     except Exception as e:
         print(f"Error saving index records: {e}")
         if logger:
@@ -311,12 +332,21 @@ def upsert_obsidian_vault(vault_path: str) -> None:
         for file_path in markdown_files:
             try:
                 # Check if file needs processing
+                str_path = str(file_path)
                 mtime = file_path.stat().st_mtime
-                prev_mtime = upsert_records.get(str(file_path), 0.0)
+                record = upsert_records.get(str_path, {"last_modified": 0.0, "chunk_ids": []})
                 
-                if not is_first_run and mtime <= prev_mtime:
+                if not is_first_run and mtime <= record["last_modified"]:
                     continue  # Skip unchanged files
                     
+                # If file changed, delete old chunks from Pinecone
+                if record["chunk_ids"]:
+                    try:
+                        index.delete(ids=record["chunk_ids"])
+                        print(f"Deleted {len(record['chunk_ids'])} old chunks for {file_path.name}")
+                    except Exception as e:
+                        print(f"Error deleting old chunks for {file_path.name}: {e}")
+                
                 # Read and chunk the file
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
@@ -325,10 +355,18 @@ def upsert_obsidian_vault(vault_path: str) -> None:
                 rel_path = file_path.relative_to(input_path)
                 chunks = chunk_markdown(content, str(rel_path))
                 
+                # Generate IDs for new chunks
+                chunk_ids = []
+                
                 # Enrich metadata for each chunk
-                for chunk in chunks:
+                for i, chunk in enumerate(chunks):
                     try:
                         enriched_chunk = enrich_obsidian_metadata(chunk)
+                        # Generate a deterministic ID for the chunk
+                        chunk_id = f"{str_path}_{i}"
+                        chunk_ids.append(chunk_id)
+                        # Add ID to chunk metadata
+                        enriched_chunk.metadata["id"] = chunk_id
                         chunks_to_upsert.append(enriched_chunk)
                     except Exception as e:
                         print(f"Error enriching chunk metadata for {file_path}: {str(e)}")
@@ -339,7 +377,11 @@ def upsert_obsidian_vault(vault_path: str) -> None:
                             })
                         continue
                 
-                updated_records[str(file_path)] = mtime
+                # Update record with new timestamp and chunk IDs
+                updated_records[str_path] = {
+                    "last_modified": mtime,
+                    "chunk_ids": chunk_ids
+                }
                 total_chunks += len(chunks)
                 
                 if len(chunks_to_upsert) % 100 == 0:
@@ -389,6 +431,13 @@ def upsert_obsidian_vault(vault_path: str) -> None:
                         [doc.metadata.get('source', 'unknown') for doc in batch],
                         e
                     )
+                # Remove failed chunk IDs from records
+                for doc in batch:
+                    file_path = doc.metadata.get('source')
+                    chunk_id = doc.metadata.get('id')
+                    if file_path and chunk_id and file_path in updated_records:
+                        if chunk_id in updated_records[file_path]["chunk_ids"]:
+                            updated_records[file_path]["chunk_ids"].remove(chunk_id)
                 continue
 
         # Save the updated records
