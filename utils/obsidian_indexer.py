@@ -1,460 +1,197 @@
+#!/usr/bin/env python3
+"""
+obsidian_indexer.py
+
+- Loads environment variables from .env
+- Checks data/indexed_files.json for known docs + last modified times
+- Loads/chunks Obsidian .md files using LangChain's ObsidianLoader
+- Indexes changed or new docs into a persistent Chroma DB (collection="obsidian")
+- Logs to both stdout and Google Cloud Logging
+"""
+
 import os
 import json
 import time
-from pathlib import Path
-from typing import Dict, List, Any
-import re
-import psutil
-
-import chromadb
+import logging
 from dotenv import load_dotenv
-from langchain_openai import OpenAIEmbeddings
+
+from langchain_community.document_loaders import ObsidianLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain.docstore.document import Document
-from langchain.text_splitter import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
-from utils.gcp_logging import get_logger
+# ------------------------------------------------------------------------------
+# Constants / Globals
+# ------------------------------------------------------------------------------
+INDEXED_FILES_JSON = os.path.join("data", "indexed_files.json")
 
-# Load .env variables
-load_dotenv()
 
-# Initialize GCP logger
-logger = get_logger("mirror-agent")
-
-# Chunking configuration
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 100
-
-def chunk_markdown(content: str, source_path: str) -> List[Document]:
-    """Split markdown content into chunks while preserving header context.
-    
-    Args:
-        content: Raw markdown content
-        source_path: Path to source file for metadata
-        
-    Returns:
-        List of Document objects with chunks
+def load_indexed_files() -> dict:
     """
-    try:
-        # First split by headers
-        headers_to_split_on = [
-            ("#", "header1"),
-            ("##", "header2"),
-            ("###", "header3"),
-        ]
-        
-        markdown_splitter = MarkdownHeaderTextSplitter(
-            headers_to_split_on=headers_to_split_on,
-            strip_headers=False,
-            return_each_line=False
-        )
-        header_splits = markdown_splitter.split_text(content)
-        
-        # Then split large sections further by size
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-            separators=["\n\n", "\n", " ", ""]
-        )
-        
-        final_chunks = []
-        for doc in header_splits:
-            # Get header context
-            header_context = {
-                k: v for k, v in doc.metadata.items() 
-                if k.startswith('header')
-            }
-            
-            # Split large sections further
-            if len(doc.page_content) > CHUNK_SIZE:
-                smaller_chunks = text_splitter.split_text(doc.page_content)
-                for i, chunk in enumerate(smaller_chunks):
-                    final_chunks.append(
-                        Document(
-                            page_content=chunk,
-                            metadata={
-                                "source": source_path,
-                                "chunk_index": i,
-                                **header_context
-                            }
-                        )
-                    )
-            else:
-                doc.metadata["source"] = source_path
-                final_chunks.append(doc)
-                
-        if logger:
-            logger.log_info(f"Split document into {len(final_chunks)} chunks", {
-                "source": source_path,
-                "num_chunks": len(final_chunks)
-            })
-            
-        return final_chunks
-        
-    except Exception as e:
-        if logger:
-            logger.log_error(e, {
-                "context": "chunking_markdown",
-                "source": source_path
-            })
-        raise
-
-# Path to your Obsidian vault
-OBSIDIAN_PATH = '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse'
-
-# Local database paths
-DB_RECORDS_PATH = Path(__file__).parent.parent / "data" / "indexed_files.json"
-CHROMA_PATH = Path(__file__).parent.parent / "data" / "chroma_db"
-
-def count_markdown_files(vault_path: str) -> int:
-    """Count all markdown files in the Obsidian vault.
-    
-    Args:
-        vault_path (str): Path to the Obsidian vault
-        
-    Returns:
-        int: Number of markdown files found
+    Load the JSON file that tracks which files have been indexed and their
+    last modified times, as well as the chunk IDs in Chroma (so we can remove
+    them if changed).
     """
-    path = Path(vault_path).expanduser().resolve()
-    if not path.exists():
-        if logger:
-            logger.log_error(ValueError(f"Vault path does not exist: {vault_path}"))
-        raise ValueError(f"Vault path does not exist: {vault_path}")
-        
-    count = 0
-    for root, _, files in os.walk(path):
-        count += sum(1 for f in files if f.endswith('.md'))
-    return count
-
-# Print and log the count when module is loaded
-total_files = count_markdown_files(OBSIDIAN_PATH)
-print(f"\nFound {total_files} markdown files in Obsidian vault at: {OBSIDIAN_PATH}\n")
-if logger:
-    logger.log_start_indexing(OBSIDIAN_PATH, total_files)
-
-def load_indexed_records() -> Dict[str, Dict[str, Any]]:
-    """
-    Loads the dictionary { 
-        file_path: {
-            "last_modified": timestamp,
-            "chunk_ids": [list of chroma ids]
-        }
-    } from a JSON file. If the file doesn't exist or is invalid, returns an empty dict.
-    """
-    if not DB_RECORDS_PATH.exists():
-        print("No existing index records found. This appears to be the first run.")
-        if logger:
-            logger.log_warning("First run detected - no existing index records", {
-                "records_path": str(DB_RECORDS_PATH)
-            })
+    if not os.path.exists(INDEXED_FILES_JSON):
         return {}
-    try:
-        with open(DB_RECORDS_PATH, "r", encoding="utf-8") as f:
-            records = json.load(f)
-            # Convert old format if needed
-            for path, value in records.items():
-                if isinstance(value, (int, float)):
-                    records[path] = {
-                        "last_modified": value,
-                        "chunk_ids": []
-                    }
-            print(f"Loaded {len(records)} existing file records.")
-            return records
-    except Exception as e:
-        print(f"Error loading index records: {e}")
-        if logger:
-            logger.log_error(e, {
-                "context": "loading_index_records",
-                "records_path": str(DB_RECORDS_PATH)
-            })
-        return {}
+    with open(INDEXED_FILES_JSON, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-def save_indexed_records(records: Dict[str, Dict[str, Any]]) -> None:
-    """
-    Saves the indexed files dictionary to a JSON file.
+
+def save_indexed_files(index_data: dict):
+    """Persist updated index data to indexed_files.json."""
+    os.makedirs(os.path.dirname(INDEXED_FILES_JSON), exist_ok=True)
+    with open(INDEXED_FILES_JSON, "w", encoding="utf-8") as f:
+        json.dump(index_data, f, indent=2)
+
+
+def main():
+    # --------------------------------------------------------------------------
+    # 1. Load environment variables
+    # --------------------------------------------------------------------------
+    load_dotenv()
+    OBSIDIAN_PATH = os.getenv("OBSIDIAN_PATH", "/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse")
+    CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", "./chroma_db")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+    # --------------------------------------------------------------------------
+    # 2. Setup GCP Logging + Standard Logging
+    # --------------------------------------------------------------------------
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger("obsidian_indexer")
     
-    Args:
-        records: Dictionary mapping file paths to their record info:
-                {
-                    "last_modified": timestamp,
-                    "chunk_ids": [list of chroma ids]
-                }
-    """
-    try:
-        # Ensure the directory exists
-        DB_RECORDS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(DB_RECORDS_PATH, "w", encoding="utf-8") as f:
-            json.dump(records, f, indent=2)
-            
-    except Exception as e:
-        print(f"Error saving index records: {e}")
-        if logger:
-            logger.log_error(e, {
-                "context": "saving_index_records",
-                "records_path": str(DB_RECORDS_PATH)
-            })
+    logger.info("Starting Obsidian indexing job...")
+    print("Starting Obsidian indexing job...")
 
-def get_performance_metrics() -> Dict[str, Any]:
-    """Get current performance metrics."""
-    process = psutil.Process()
-    memory_info = process.memory_info()
-    return {
-        "memory_usage_mb": memory_info.rss / 1024 / 1024,
-        "cpu_percent": process.cpu_percent(),
-        "thread_count": process.num_threads()
-    }
+    # --------------------------------------------------------------------------
+    # 3. Load existing index data
+    # --------------------------------------------------------------------------
+    indexed_files = load_indexed_files()
+    logger.info(f"Loaded index data for {len(indexed_files)} files.")
+    print(f"Loaded index data for {len(indexed_files)} files from JSON.")
 
-def enrich_obsidian_metadata(doc: Document) -> Document:
-    """Add Obsidian-specific metadata to the document."""
-    try:
-        # Get the original metadata
-        metadata = doc.metadata.copy()
-        
-        # Extract title from filename if not present
-        if "title" not in metadata and "source" in metadata:
-            metadata["title"] = Path(metadata["source"]).stem
-            
-        # Truncate content for metadata
-        content = doc.page_content[:500]  # First 500 chars for preview
-        
-        # Extract links and tags from content
-        links = re.findall(r'\[\[(.*?)\]\]', content)
-        tags = re.findall(r'#(\w+)', content)
-        
-        # Keep only essential metadata within size limits
-        filtered_metadata = {
-            "title": metadata.get("title", "")[:50],  # Limit title length
-            "path": str(Path(metadata.get("relative_path", "")).stem)[:100],  # Just filename
-            "links": [l[:50] for l in links[:5]],  # Keep only first 5 links, truncated
-            "tags": [t[:20] for t in tags[:5]],  # Keep only first 5 tags, truncated
-            "preview": content[:200]  # Shorter preview
-        }
-        
-        # Calculate total metadata size
-        metadata_str = str(filtered_metadata)
-        if len(metadata_str.encode('utf-8')) > 40000:  # Leave some buffer
-            # If still too large, further reduce
-            filtered_metadata["preview"] = filtered_metadata["preview"][:100]
-            filtered_metadata["links"] = filtered_metadata["links"][:2]
-            filtered_metadata["tags"] = filtered_metadata["tags"][:2]
-            if logger:
-                logger.log_warning("Document metadata size reduced", {
-                    "doc_path": metadata.get("source", "unknown"),
-                    "original_size": len(metadata_str.encode('utf-8')),
-                    "reduced_size": len(str(filtered_metadata).encode('utf-8'))
-                })
-        
-        return Document(page_content=doc.page_content, metadata=filtered_metadata)
-    except Exception as e:
-        if logger:
-            logger.log_error(e, {
-                "context": "metadata_enrichment",
-                "doc_path": doc.metadata.get("source", "unknown")
-            })
-        raise
+    # --------------------------------------------------------------------------
+    # 4. Load Obsidian docs
+    # --------------------------------------------------------------------------
+    logger.info(f"Loading documents from vault: {OBSIDIAN_PATH}")
+    print(f"Loading documents from vault: {OBSIDIAN_PATH}")
 
-def upsert_obsidian_vault(vault_path: str) -> None:
-    """
-    1. Loads all markdown from an Obsidian vault
-    2. Chunks content preserving header context
-    3. Upserts only the changed/new files to Chroma
-    4. Tracks files with 'indexed_files.json' so we only upsert deltas next time
-    """
-    start_time = time.time()
-    success = False
-    processed_files = 0
-    total_chunks = 0
+    loader = ObsidianLoader(OBSIDIAN_PATH)
+    all_docs = loader.load()  # returns a list of Documents
+    
+    # Limit to first 5 documents for testing
+    test_docs = all_docs[:5]
+    logger.info(f"Loaded {len(all_docs)} total documents, testing with first {len(test_docs)}")
+    print(f"Loaded {len(all_docs)} total documents, testing with first {len(test_docs)}")
+    
+    # Print test document paths
+    for i, doc in enumerate(test_docs):
+        file_path = doc.metadata.get("source") or doc.metadata.get("file_path")
+        print(f"Test document {i+1}: {file_path}")
 
-    try:
-        # Initialize Chroma with persistent storage
-        client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-        
+    # --------------------------------------------------------------------------
+    # 5. Initialize text splitter, embeddings, and Chroma
+    # --------------------------------------------------------------------------
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+
+    embeddings = HuggingFaceEmbeddings(
+        model_name="all-MiniLM-L6-v2",
+        model_kwargs={'device': 'cpu'}
+    )
+
+    vectorstore = Chroma(
+        collection_name="obsidian",
+        persist_directory=CHROMA_DB_DIR,
+        embedding_function=embeddings
+    )
+
+    # --------------------------------------------------------------------------
+    # 6. Iterate through docs, skip unchanged, reindex changed
+    # --------------------------------------------------------------------------
+    changed_count = 0
+    unchanged_count = 0
+
+    for doc in test_docs:  
+        # Typically doc.metadata["source"] or doc.metadata["file_path"] is the path
+        file_path = doc.metadata.get("source") or doc.metadata.get("file_path")
+        if not file_path:
+            # If we can't locate the path, skip
+            continue
+
+        # Get last modified time from the filesystem
+        # If doc.metadata doesn't have it, we can do an os.stat call:
         try:
-            # Try to get the collection
-            collection = client.get_collection("obsidian")
-            print("Connected to existing Chroma collection")
-        except Exception as e:
-            # If collection doesn't exist, create it
-            print("Creating new Chroma collection")
-            if logger:
-                logger.log_warning("Creating new Chroma collection")
-            collection = client.create_collection(
-                name="obsidian",
-                metadata={"description": "Obsidian vault embeddings"}
-            )
+            stat = os.stat(file_path)
+            mtime = stat.st_mtime
+        except FileNotFoundError:
+            # Possibly the doc is from some other location or ephemeral
+            # We'll just index it
+            mtime = time.time()
 
-        # Create the embeddings + VectorStore
-        embeddings = OpenAIEmbeddings()  # requires OPENAI_API_KEY in your .env
-        vectorstore = Chroma(
-            client=client,
-            collection_name="obsidian",
-            embedding_function=embeddings,
+        record = indexed_files.get(file_path)
+        if record is not None:
+            old_mtime = record.get("last_modified", 0)
+        else:
+            old_mtime = 0
+
+        # Check if doc changed
+        if mtime <= old_mtime:
+            # This doc is unchanged; skip re-indexing
+            unchanged_count += 1
+            continue
+
+        # Doc changed or new
+        changed_count += 1
+        logger.info(f"Re-indexing changed file: {file_path}")
+        print(f"Re-indexing changed file: {file_path}")
+
+        # If we have chunk IDs from before, remove them from Chroma
+        old_chunk_ids = record.get("chunk_ids", []) if record else []
+        if old_chunk_ids:
+            vectorstore.delete(ids=old_chunk_ids)
+            logger.info(f"Deleted {len(old_chunk_ids)} old chunks for {file_path}")
+            print(f"Deleted {len(old_chunk_ids)} old chunks for {file_path}")
+
+        # Split doc into chunks
+        chunks = splitter.split_documents([doc])
+        # We can create our own chunk IDs if we like, e.g. file_path + index
+        chunk_ids = []
+        for i, chunk in enumerate(chunks):
+            # Build a stable ID
+            cid = f"{file_path}-{i}"
+            chunk.metadata["id"] = cid
+            chunk_ids.append(cid)
+
+        # Add chunks to Chroma (pass ids=...)
+        vectorstore.add_documents(
+            documents=chunks,
+            ids=chunk_ids
         )
 
-        # Load existing upsert records
-        upsert_records = load_indexed_records()
-        is_first_run = len(upsert_records) == 0
-        print(f"First run: {is_first_run} (found {len(upsert_records)} existing records)")
+        # Update the record in memory
+        indexed_files[file_path] = {
+            "last_modified": mtime,
+            "chunk_ids": chunk_ids,
+        }
 
-        # Load documents from Obsidian
-        input_path = Path(vault_path).expanduser().resolve()
-        if not input_path.exists():
-            raise ValueError(f"Vault path does not exist: {vault_path}")
+    # --------------------------------------------------------------------------
+    # 7. Persist changes to Chroma & Save updated index data
+    # --------------------------------------------------------------------------
+    vectorstore.persist()
+    save_indexed_files(indexed_files)
 
-        print(f"Loading markdown files from: {input_path}")
-        
-        # First get all markdown files in the vault
-        markdown_files = list(input_path.rglob("*.md"))
-        print(f"Found {len(markdown_files)} markdown files in vault.")
-        
-        # Load and chunk each file individually
-        chunks_to_upsert = []
-        updated_records = dict(upsert_records)  # copy so we don't mutate in-place
+    # --------------------------------------------------------------------------
+    # 8. Logging summary
+    # --------------------------------------------------------------------------
+    summary_msg = (
+        f"Indexing job complete. "
+        f"New/changed files: {changed_count}, "
+        f"Unchanged/skipped: {unchanged_count}. "
+        "Chroma persisted successfully."
+    )
+    logger.info(summary_msg)
+    print(summary_msg)
 
-        # Check each file for changes
-        print("\nProcessing documents...")
-        for file_path in markdown_files:
-            try:
-                # Check if file needs processing
-                str_path = str(file_path)
-                mtime = file_path.stat().st_mtime
-                record = upsert_records.get(str_path, {"last_modified": 0.0, "chunk_ids": []})
-                
-                if not is_first_run and mtime <= record["last_modified"]:
-                    continue  # Skip unchanged files
-                    
-                # If file changed, delete old chunks from Chroma
-                if record["chunk_ids"]:
-                    try:
-                        collection.delete(ids=record["chunk_ids"])
-                        print(f"Deleted {len(record['chunk_ids'])} old chunks for {file_path.name}")
-                    except Exception as e:
-                        print(f"Error deleting old chunks for {file_path.name}: {e}")
-                
-                # Read and chunk the file
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                # Get chunks with header context
-                rel_path = file_path.relative_to(input_path)
-                chunks = chunk_markdown(content, str(rel_path))
-                
-                # Generate IDs for new chunks
-                chunk_ids = []
-                
-                # Enrich metadata for each chunk
-                for i, chunk in enumerate(chunks):
-                    try:
-                        enriched_chunk = enrich_obsidian_metadata(chunk)
-                        # Generate a deterministic ID for the chunk
-                        chunk_id = f"{str_path}_{i}"
-                        chunk_ids.append(chunk_id)
-                        # Add ID to chunk metadata
-                        enriched_chunk.metadata["id"] = chunk_id
-                        chunks_to_upsert.append(enriched_chunk)
-                    except Exception as e:
-                        print(f"Error enriching chunk metadata for {file_path}: {str(e)}")
-                        if logger:
-                            logger.log_error(e, {
-                                "context": "enriching_chunk_metadata",
-                                "file_path": str(file_path)
-                            })
-                        continue
-                
-                # Update record with new timestamp and chunk IDs
-                updated_records[str_path] = {
-                    "last_modified": mtime,
-                    "chunk_ids": chunk_ids
-                }
-                total_chunks += len(chunks)
-                
-                if len(chunks_to_upsert) % 100 == 0:
-                    print(f"Processed {len(chunks_to_upsert)} chunks...")
-                    if logger:
-                        logger.log_performance_metrics(get_performance_metrics())
-                        
-            except Exception as e:
-                print(f"Error processing {file_path}: {str(e)}")
-                if logger:
-                    logger.log_error(e, {
-                        "context": "processing_file",
-                        "file_path": str(file_path)
-                    })
-                continue
-
-        # Upsert only if we have deltas
-        if not chunks_to_upsert:
-            print("No new or changed markdown files to upsert.")
-            success = True
-            return
-
-        print(f"\nUpserting {len(chunks_to_upsert)} chunks to Chroma...")
-        
-        # Batch chunks to avoid rate limits
-        batch_size = 20  # Even smaller batch size
-        for i in range(0, len(chunks_to_upsert), batch_size):
-            batch = chunks_to_upsert[i:i + batch_size]
-            try:
-                # Add documents to Chroma
-                vectorstore.add_documents(documents=batch)
-                processed_files += 1
-                
-                if i % 100 == 0:
-                    print(f"Upserted {i + len(batch)}/{len(chunks_to_upsert)} chunks...")
-                    if logger:
-                        logger.log_performance_metrics(get_performance_metrics())
-                        
-            except Exception as e:
-                print(f"Error upserting batch: {str(e)}")
-                if logger:
-                    logger.log_error(e, {
-                        "context": "upserting_batch",
-                        "batch_start": i,
-                        "batch_size": len(batch)
-                    })
-                continue
-
-        # Save updated records
-        save_indexed_records(updated_records)
-        
-        end_time = time.time()
-        duration = round(end_time - start_time, 2)
-        
-        print(f"\nIndexing complete!")
-        print(f"Processed {processed_files} files")
-        print(f"Upserted {total_chunks} chunks")
-        print(f"Time taken: {duration} seconds")
-        
-        if logger:
-            logger.log_complete_indexing({
-                "success": True,
-                "files_processed": processed_files,
-                "chunks_upserted": total_chunks,
-                "duration_seconds": duration,
-                **get_performance_metrics()
-            })
-            
-        success = True
-
-    except Exception as e:
-        print(f"Error during indexing: {str(e)}")
-        if logger:
-            logger.log_error(e, {
-                "context": "indexing_vault",
-                "vault_path": vault_path
-            })
-        raise
-    
-    finally:
-        if not success and logger:
-            logger.log_complete_indexing({
-                "success": False,
-                "files_processed": processed_files,
-                "chunks_upserted": total_chunks,
-                "duration_seconds": time.time() - start_time,
-                **get_performance_metrics()
-            })
 
 if __name__ == "__main__":
-    upsert_obsidian_vault(OBSIDIAN_PATH)
+    main()
