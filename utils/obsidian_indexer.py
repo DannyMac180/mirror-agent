@@ -6,10 +6,10 @@ from typing import Dict, List, Any
 import re
 import psutil
 
-from pinecone import Pinecone, ServerlessSpec
+import chromadb
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
-from langchain_pinecone import PineconeVectorStore
+from langchain_community.vectorstores import Chroma
 from langchain.docstore.document import Document
 from langchain.text_splitter import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
@@ -99,15 +99,12 @@ def chunk_markdown(content: str, source_path: str) -> List[Document]:
             })
         raise
 
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_ENV = os.getenv("PINECONE_ENV", "gcp-starter")
-INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "mirror-agent")
-
 # Path to your Obsidian vault
 OBSIDIAN_PATH = '/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse'
 
-# Local JSON for tracking which files have been indexed 
+# Local database paths
 DB_RECORDS_PATH = Path(__file__).parent.parent / "data" / "indexed_files.json"
+CHROMA_PATH = Path(__file__).parent.parent / "data" / "chroma_db"
 
 def count_markdown_files(vault_path: str) -> int:
     """Count all markdown files in the Obsidian vault.
@@ -140,7 +137,7 @@ def load_indexed_records() -> Dict[str, Dict[str, Any]]:
     Loads the dictionary { 
         file_path: {
             "last_modified": timestamp,
-            "chunk_ids": [list of pinecone ids]
+            "chunk_ids": [list of chroma ids]
         }
     } from a JSON file. If the file doesn't exist or is invalid, returns an empty dict.
     """
@@ -180,7 +177,7 @@ def save_indexed_records(records: Dict[str, Dict[str, Any]]) -> None:
         records: Dictionary mapping file paths to their record info:
                 {
                     "last_modified": timestamp,
-                    "chunk_ids": [list of pinecone ids]
+                    "chunk_ids": [list of chroma ids]
                 }
     """
     try:
@@ -261,7 +258,7 @@ def upsert_obsidian_vault(vault_path: str) -> None:
     """
     1. Loads all markdown from an Obsidian vault
     2. Chunks content preserving header context
-    3. Upserts only the changed/new files to Pinecone
+    3. Upserts only the changed/new files to Chroma
     4. Tracks files with 'indexed_files.json' so we only upsert deltas next time
     """
     start_time = time.time()
@@ -270,41 +267,29 @@ def upsert_obsidian_vault(vault_path: str) -> None:
     total_chunks = 0
 
     try:
-        # Initialize Pinecone
-        if not PINECONE_API_KEY:
-            raise ValueError("Missing Pinecone API key. Please set PINECONE_API_KEY in your .env file.")
-        
-        pc = Pinecone(api_key=PINECONE_API_KEY)
+        # Initialize Chroma with persistent storage
+        client = chromadb.PersistentClient(path=str(CHROMA_PATH))
         
         try:
-            # Try to get the index first
-            index = pc.Index(INDEX_NAME)
-            print(f"Connected to existing index: {INDEX_NAME}")
+            # Try to get the collection
+            collection = client.get_collection("obsidian")
+            print("Connected to existing Chroma collection")
         except Exception as e:
-            # If index doesn't exist, create it
-            print(f"Creating new index: {INDEX_NAME}")
+            # If collection doesn't exist, create it
+            print("Creating new Chroma collection")
             if logger:
-                logger.log_warning("Creating new Pinecone index", {"index_name": INDEX_NAME})
-            pc.create_index(
-                name=INDEX_NAME, 
-                dimension=1536,   # for text-embedding-3-small
-                metric="cosine",
-                spec=ServerlessSpec(
-                    cloud="gcp",  # Using GCP for starter environment
-                    region="us-central1"  # GCP region format
-                )
+                logger.log_warning("Creating new Chroma collection")
+            collection = client.create_collection(
+                name="obsidian",
+                metadata={"description": "Obsidian vault embeddings"}
             )
-            # Wait for index to be ready
-            while not pc.describe_index(INDEX_NAME).status["ready"]:
-                time.sleep(1)
-            index = pc.Index(INDEX_NAME)
 
         # Create the embeddings + VectorStore
         embeddings = OpenAIEmbeddings()  # requires OPENAI_API_KEY in your .env
-        vectorstore = PineconeVectorStore(
-            index=index,
-            embedding=embeddings,
-            text_key="text"
+        vectorstore = Chroma(
+            client=client,
+            collection_name="obsidian",
+            embedding_function=embeddings,
         )
 
         # Load existing upsert records
@@ -339,10 +324,10 @@ def upsert_obsidian_vault(vault_path: str) -> None:
                 if not is_first_run and mtime <= record["last_modified"]:
                     continue  # Skip unchanged files
                     
-                # If file changed, delete old chunks from Pinecone
+                # If file changed, delete old chunks from Chroma
                 if record["chunk_ids"]:
                     try:
-                        index.delete(ids=record["chunk_ids"])
+                        collection.delete(ids=record["chunk_ids"])
                         print(f"Deleted {len(record['chunk_ids'])} old chunks for {file_path.name}")
                     except Exception as e:
                         print(f"Error deleting old chunks for {file_path.name}: {e}")
@@ -404,60 +389,72 @@ def upsert_obsidian_vault(vault_path: str) -> None:
             success = True
             return
 
-        print(f"\nUpserting {len(chunks_to_upsert)} chunks to Pinecone...")
+        print(f"\nUpserting {len(chunks_to_upsert)} chunks to Chroma...")
         
         # Batch chunks to avoid rate limits
         batch_size = 20  # Even smaller batch size
-        total_batches = (len(chunks_to_upsert) + batch_size - 1) // batch_size
-        
         for i in range(0, len(chunks_to_upsert), batch_size):
             batch = chunks_to_upsert[i:i + batch_size]
-            current_batch = i // batch_size + 1
-            
-            print(f"Upserting batch {current_batch} of {total_batches} ({len(batch)} chunks)...")
             try:
-                vectorstore.add_documents(batch)
-                processed_files += len(batch)
+                # Add documents to Chroma
+                vectorstore.add_documents(documents=batch)
+                processed_files += 1
                 
-                # Log performance metrics every few batches
-                if current_batch % 5 == 0:
+                if i % 100 == 0:
+                    print(f"Upserted {i + len(batch)}/{len(chunks_to_upsert)} chunks...")
                     if logger:
                         logger.log_performance_metrics(get_performance_metrics())
                         
             except Exception as e:
-                print(f"Error upserting batch {current_batch}: {str(e)}")
+                print(f"Error upserting batch: {str(e)}")
                 if logger:
-                    logger.log_batch_failure(
-                        [doc.metadata.get('source', 'unknown') for doc in batch],
-                        e
-                    )
-                # Remove failed chunk IDs from records
-                for doc in batch:
-                    file_path = doc.metadata.get('source')
-                    chunk_id = doc.metadata.get('id')
-                    if file_path and chunk_id and file_path in updated_records:
-                        if chunk_id in updated_records[file_path]["chunk_ids"]:
-                            updated_records[file_path]["chunk_ids"].remove(chunk_id)
+                    logger.log_error(e, {
+                        "context": "upserting_batch",
+                        "batch_start": i,
+                        "batch_size": len(batch)
+                    })
                 continue
 
-        # Save the updated records
+        # Save updated records
         save_indexed_records(updated_records)
+        
+        end_time = time.time()
+        duration = round(end_time - start_time, 2)
+        
+        print(f"\nIndexing complete!")
+        print(f"Processed {processed_files} files")
+        print(f"Upserted {total_chunks} chunks")
+        print(f"Time taken: {duration} seconds")
+        
+        if logger:
+            logger.log_complete_indexing({
+                "success": True,
+                "files_processed": processed_files,
+                "chunks_upserted": total_chunks,
+                "duration_seconds": duration,
+                **get_performance_metrics()
+            })
+            
         success = True
-        
-        print(f"\nProcessing complete:")
-        print(f"- Total files processed: {len(markdown_files)}")
-        print(f"- Total chunks created: {total_chunks}")
-        print(f"- Total chunks upserted: {processed_files}")
-        
+
     except Exception as e:
         print(f"Error during indexing: {str(e)}")
         if logger:
-            logger.log_error(e, {"context": "indexing_operation"})
-        success = False
-        
+            logger.log_error(e, {
+                "context": "indexing_vault",
+                "vault_path": vault_path
+            })
+        raise
+    
     finally:
-        if logger:
-            logger.log_end_indexing(processed_files, success)
+        if not success and logger:
+            logger.log_complete_indexing({
+                "success": False,
+                "files_processed": processed_files,
+                "chunks_upserted": total_chunks,
+                "duration_seconds": time.time() - start_time,
+                **get_performance_metrics()
+            })
 
 if __name__ == "__main__":
     upsert_obsidian_vault(OBSIDIAN_PATH)
