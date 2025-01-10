@@ -2,11 +2,12 @@
 """
 obsidian_indexer.py
 
-- Loads environment variables from .env
-- Checks data/indexed_files.json for known docs + last modified times
-- Loads/chunks Obsidian .md files using LangChain's ObsidianLoader
-- Indexes changed or new docs into a persistent Chroma DB (collection="obsidian")
-- Logs to both stdout and Google Cloud Logging
+ - Loads environment variables from .env
+ - Checks data/indexed_files.json for known docs + last modified times
+ - Loads/chunks Obsidian .md files using LangChain's ObsidianLoader
+ - Adds contextual retrieval logic by having Google's Gemini model summarize each chunk in context
+ - Indexes changed or new docs into a persistent Chroma DB (collection="obsidian")
+ - Logs to both stdout and Google Cloud Logging
 """
 
 import os
@@ -19,6 +20,8 @@ from langchain_community.document_loaders import ObsidianLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
+
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 # ------------------------------------------------------------------------------
 # Constants / Globals
@@ -45,6 +48,26 @@ def save_indexed_files(index_data: dict):
         json.dump(index_data, f, indent=2)
 
 
+def generate_context(llm, doc_text: str, chunk_text: str) -> str:
+    """
+    Given the full document text and a chunk of that document,
+    ask Gemini to produce a short contextual summary
+    that clarifies the chunk's role/meaning within the doc.
+    """
+    prompt = f"""You are given an entire document and one chunk from it:
+Document Text:
+{doc_text}
+
+Chunk:
+{chunk_text}
+
+Please provide a short, succinct context or summary of this chunk's role in the document.
+Only return the short context text, nothing else.
+"""
+    response = llm.invoke(prompt)
+    return response.content.strip()
+
+
 def main():
     # --------------------------------------------------------------------------
     # 1. Load environment variables
@@ -52,7 +75,7 @@ def main():
     load_dotenv()
     OBSIDIAN_PATH = os.getenv("OBSIDIAN_PATH", "/Users/danielmcateer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ideaverse")
     CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", "./chroma_db")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
     # --------------------------------------------------------------------------
     # 2. Setup GCP Logging + Standard Logging
@@ -62,6 +85,15 @@ def main():
     
     logger.info("Starting Obsidian indexing job...")
     print("Starting Obsidian indexing job...")
+
+    # Initialize Gemini model
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        temperature=.7,
+        max_tokens=None,
+        timeout=None,
+        max_retries=2,
+    )
 
     # --------------------------------------------------------------------------
     # 3. Load existing index data
@@ -78,9 +110,9 @@ def main():
 
     loader = ObsidianLoader(OBSIDIAN_PATH)
     all_docs = loader.load()  # returns a list of Documents
-    
+
     # Limit to first 5 documents for testing
-    test_docs = all_docs[:5]
+    test_docs = all_docs[:5]  # Remove or adjust this limit in production
     logger.info(f"Loaded {len(all_docs)} total documents, testing with first {len(test_docs)}")
     print(f"Loaded {len(all_docs)} total documents, testing with first {len(test_docs)}")
     
@@ -111,7 +143,7 @@ def main():
     changed_count = 0
     unchanged_count = 0
 
-    for doc in test_docs:  
+    for doc in test_docs:
         # Typically doc.metadata["source"] or doc.metadata["file_path"] is the path
         file_path = doc.metadata.get("source") or doc.metadata.get("file_path")
         if not file_path:
@@ -119,7 +151,6 @@ def main():
             continue
 
         # Get last modified time from the filesystem
-        # If doc.metadata doesn't have it, we can do an os.stat call:
         try:
             stat = os.stat(file_path)
             mtime = stat.st_mtime
@@ -148,25 +179,66 @@ def main():
         # If we have chunk IDs from before, remove them from Chroma
         old_chunk_ids = record.get("chunk_ids", []) if record else []
         if old_chunk_ids:
-            vectorstore.delete(ids=old_chunk_ids)
-            logger.info(f"Deleted {len(old_chunk_ids)} old chunks for {file_path}")
-            print(f"Deleted {len(old_chunk_ids)} old chunks for {file_path}")
+            try:
+                # Remove outdated embeddings if file changed
+                vectorstore.delete(ids=old_chunk_ids)
+                logger.info(f"Deleted {len(old_chunk_ids)} old chunks for {file_path}")
+                print(f"Deleted {len(old_chunk_ids)} old chunks for {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to delete old chunks for {file_path}: {str(e)}")
+                print(f"Failed to delete old chunks for {file_path}: {str(e)}")
+                continue
 
         # Split doc into chunks
-        chunks = splitter.split_documents([doc])
-        # We can create our own chunk IDs if we like, e.g. file_path + index
-        chunk_ids = []
-        for i, chunk in enumerate(chunks):
-            # Build a stable ID
-            cid = f"{file_path}-{i}"
-            chunk.metadata["id"] = cid
-            chunk_ids.append(cid)
+        try:
+            chunks = splitter.split_documents([doc])
+            logger.info(f"Split {file_path} into {len(chunks)} chunks")
+        except Exception as e:
+            logger.error(f"Failed to split document {file_path}: {str(e)}")
+            print(f"Failed to split document {file_path}: {str(e)}")
+            continue
 
-        # Add chunks to Chroma (pass ids=...)
-        vectorstore.add_documents(
-            documents=chunks,
-            ids=chunk_ids
-        )
+        # We'll gather the doc's full text once
+        full_doc_text = doc.page_content
+
+        chunk_ids = []
+        processed_chunks = []
+        
+        # Process each chunk with Gemini context
+        for i, chunk in enumerate(chunks):
+            try:
+                # Build a stable ID
+                cid = f"{file_path}-{i}"
+                # Generate short context text from Gemini
+                context = generate_context(llm, full_doc_text, chunk.page_content)
+                # Append the context to the chunk so it gets embedded
+                chunk.page_content = chunk.page_content + "\n\nContext:\n" + context
+
+                chunk.metadata["id"] = cid
+                chunk_ids.append(cid)
+                processed_chunks.append(chunk)
+            except Exception as e:
+                logger.error(f"Failed to process chunk {i} of {file_path}: {str(e)}")
+                print(f"Failed to process chunk {i} of {file_path}: {str(e)}")
+                continue
+
+        if not processed_chunks:
+            logger.error(f"No chunks were successfully processed for {file_path}")
+            print(f"No chunks were successfully processed for {file_path}")
+            continue
+
+        # Add chunks to Chroma
+        try:
+            vectorstore.add_documents(
+                documents=processed_chunks,
+                ids=chunk_ids
+            )
+            logger.info(f"Successfully uploaded {len(processed_chunks)} chunks from {os.path.basename(file_path)} to Chroma")
+            print(f"Successfully uploaded {len(processed_chunks)} chunks from {os.path.basename(file_path)} to Chroma")
+        except Exception as e:
+            logger.error(f"Failed to upload chunks to Chroma for {file_path}: {str(e)}")
+            print(f"Failed to upload chunks to Chroma for {file_path}: {str(e)}")
+            continue
 
         # Update the record in memory
         indexed_files[file_path] = {
