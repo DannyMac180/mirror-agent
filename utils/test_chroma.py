@@ -14,7 +14,7 @@ def test_chroma_retrieval():
     collection = client.get_collection("obsidian")
 
     # Test query
-    query = "Tell me about Tools of Titans"
+    query = "Vervaeke"
     results = collection.query(
         query_texts=[query],
         n_results=3,
