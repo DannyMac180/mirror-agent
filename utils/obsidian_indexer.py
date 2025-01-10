@@ -111,16 +111,9 @@ def main():
     loader = ObsidianLoader(OBSIDIAN_PATH)
     all_docs = loader.load()  # returns a list of Documents
 
-    # Limit to first 5 documents for testing
-    test_docs = all_docs[:5]  # Remove or adjust this limit in production
-    logger.info(f"Loaded {len(all_docs)} total documents, testing with first {len(test_docs)}")
-    print(f"Loaded {len(all_docs)} total documents, testing with first {len(test_docs)}")
+    logger.info(f"Loaded {len(all_docs)} total documents")
+    print(f"Loaded {len(all_docs)} total documents")
     
-    # Print test document paths
-    for i, doc in enumerate(test_docs):
-        file_path = doc.metadata.get("source") or doc.metadata.get("file_path")
-        print(f"Test document {i+1}: {file_path}")
-
     # --------------------------------------------------------------------------
     # 5. Initialize text splitter, embeddings, and Chroma
     # --------------------------------------------------------------------------
@@ -143,12 +136,15 @@ def main():
     changed_count = 0
     unchanged_count = 0
 
-    for doc in test_docs:
+    total_docs = len(all_docs)
+    for doc_index, doc in enumerate(all_docs, 1):
         # Typically doc.metadata["source"] or doc.metadata["file_path"] is the path
         file_path = doc.metadata.get("source") or doc.metadata.get("file_path")
         if not file_path:
             # If we can't locate the path, skip
             continue
+
+        print(f"Processing document {doc_index}/{total_docs}: {file_path}")
 
         # Get last modified time from the filesystem
         try:
@@ -235,22 +231,23 @@ def main():
             )
             logger.info(f"Successfully uploaded {len(processed_chunks)} chunks from {os.path.basename(file_path)} to Chroma")
             print(f"Successfully uploaded {len(processed_chunks)} chunks from {os.path.basename(file_path)} to Chroma")
+            
+            # Update and save the record immediately after successful upload
+            indexed_files[file_path] = {
+                "last_modified": mtime,
+                "chunk_ids": chunk_ids,
+            }
+            save_indexed_files(indexed_files)
+            logger.info(f"Updated index record for {os.path.basename(file_path)}")
         except Exception as e:
             logger.error(f"Failed to upload chunks to Chroma for {file_path}: {str(e)}")
             print(f"Failed to upload chunks to Chroma for {file_path}: {str(e)}")
             continue
 
-        # Update the record in memory
-        indexed_files[file_path] = {
-            "last_modified": mtime,
-            "chunk_ids": chunk_ids,
-        }
-
     # --------------------------------------------------------------------------
-    # 7. Persist changes to Chroma & Save updated index data
+    # 7. Persist changes to Chroma
     # --------------------------------------------------------------------------
     vectorstore.persist()
-    save_indexed_files(indexed_files)
 
     # --------------------------------------------------------------------------
     # 8. Logging summary

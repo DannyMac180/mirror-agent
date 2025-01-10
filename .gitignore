@@ -165,6 +165,9 @@ uv.lock
 indexed_files.json
 full_code_snapshot.txt
 
+# Chroma vector database
+chroma_db/
+
 # Data files
 data/
 data/synthetic_qa_dataset.json
