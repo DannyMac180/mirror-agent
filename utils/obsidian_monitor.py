@@ -7,13 +7,29 @@ import signal
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
-from . import gcp_logging
+import logging
+import google.cloud.logging
+from google.cloud.logging_v2.handlers import CloudLoggingHandler
 
 # Load environment variables
 load_dotenv()
 
 # Initialize GCP logger
-logger = gcp_logging.get_logger("mirror-agent")
+def setup_logging_for_gcp(logger_name: str = "mirror-agent") -> logging.Logger:
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.INFO)
+    # GCP
+    client = google.cloud.logging.Client()
+    cloud_handler = CloudLoggingHandler(client, name=logger_name)
+    logger.addHandler(cloud_handler)
+
+    # Also console
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    logger.addHandler(console_handler)
+    return logger
+
+logger = setup_logging_for_gcp("mirror-agent")
 
 # Check if running in VS Code
 IN_VSCODE = os.environ.get('VSCODE_CLI', False) or os.environ.get('TERM_PROGRAM') == 'vscode'
@@ -35,7 +51,7 @@ def run_indexer():
         env = os.environ.copy()
         env['PYTHONPATH'] = str(Path(__file__).parent.parent)
         
-        logger.log_info("Starting Obsidian indexer", {
+        logger.info("Starting Obsidian indexer", {
             "trigger": "obsidian_app_opened",
             "timestamp": datetime.now().isoformat()
         })
@@ -44,31 +60,28 @@ def run_indexer():
         if IN_VSCODE:
             print("\n[Obsidian Monitor] Running indexer...")
         
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ['python', str(script_path)],
             env=env,
-            capture_output=True,
-            text=True
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
         )
-        
-        if result.returncode == 0:
-            logger.log_info("Indexer completed successfully", {
-                "stdout": result.stdout[-500:],  # Last 500 chars
+        for line in proc.stdout:
+            # Stream each line as INFO
+            logger.info("[indexer] %s", line.rstrip())
+        proc.wait()
+        if proc.returncode != 0:
+            logger.error("obsidian_indexer.py exited with status %d", proc.returncode)
+        else:
+            logger.info("Indexer completed successfully", {
                 "timestamp": datetime.now().isoformat()
             })
             if IN_VSCODE:
                 print("[Obsidian Monitor] Indexing completed successfully")
-        else:
-            logger.log_error(Exception(result.stderr), {
-                "context": "indexer_execution",
-                "stdout": result.stdout[-500:],
-                "stderr": result.stderr[-500:]
-            })
-            if IN_VSCODE:
-                print(f"[Obsidian Monitor] Error during indexing: {result.stderr[-200:]}")
             
     except Exception as e:
-        logger.log_error(e, {"context": "running_indexer"})
+        logger.error(e, {"context": "running_indexer"})
         if IN_VSCODE:
             print(f"[Obsidian Monitor] Error running indexer: {str(e)}")
 
@@ -79,7 +92,7 @@ def monitor_obsidian():
     else:
         print("Starting Obsidian monitor...")
         
-    logger.log_info("Starting Obsidian monitor", {
+    logger.info("Starting Obsidian monitor", {
         "timestamp": datetime.now().isoformat(),
         "context": "vscode" if IN_VSCODE else "shell"
     })
@@ -92,7 +105,7 @@ def monitor_obsidian():
         else:
             print("\nShutting down Obsidian monitor...")
             
-        logger.log_info("Shutting down Obsidian monitor", {
+        logger.info("Shutting down Obsidian monitor", {
             "timestamp": datetime.now().isoformat(),
             "context": "vscode" if IN_VSCODE else "shell"
         })
@@ -118,7 +131,7 @@ def monitor_obsidian():
             time.sleep(5)  # Check every 5 seconds
             
     except Exception as e:
-        logger.log_error(e, {"context": "obsidian_monitor"})
+        logger.error(e, {"context": "obsidian_monitor"})
         if IN_VSCODE:
             print(f"[Obsidian Monitor] Error: {str(e)}")
         else:
