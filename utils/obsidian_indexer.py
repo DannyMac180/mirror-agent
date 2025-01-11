@@ -132,8 +132,9 @@ def main(test_mode=False):
     try:
         loader = ObsidianLoader(vault_root)
         all_docs = loader.load()
-        logger.info(f"Found {len(all_docs)} documents in vault")
-        print(f"Found {len(all_docs)} documents in vault")
+        total_docs = len(all_docs)
+        logger.info(f"Found {total_docs} documents in vault")
+        print(f"Found {total_docs} documents in vault")
     except Exception as e:
         logger.error(f"Failed to load documents from vault: {str(e)}")
         print(f"Failed to load documents from vault: {str(e)}")
@@ -150,11 +151,11 @@ def main(test_mode=False):
         # Use doc.metadata["path"] as the single source of truth
         file_path = doc.metadata.get("path")
         if not file_path:
-            logger.warning(f"No `path` found in doc metadata. Skipping doc: {doc}")
+            logger.warning(f"No `path` found in doc metadata. Skipping doc {doc_index}/{total_docs}: {doc}")
             continue
 
         if not os.path.exists(file_path):
-            logger.error(f"File does not exist: {file_path}")
+            logger.error(f"File does not exist ({doc_index}/{total_docs}): {file_path}")
             continue
 
         record = indexed_files.get(file_path, None)
@@ -173,11 +174,13 @@ def main(test_mode=False):
 
         if mtime <= old_mtime:  # unchanged
             unchanged_count += 1
-            logger.info(f"Skipping unchanged doc: {file_path}")
+            logger.info(f"Skipping unchanged doc ({doc_index}/{total_docs}): {file_path}")
+            print(f"Skipping unchanged doc ({doc_index}/{total_docs}): {os.path.basename(file_path)}")
             continue
 
         changed_count += 1
-        logger.info(f"Processing changed/new file: {file_path}")
+        logger.info(f"Processing changed/new file ({doc_index}/{total_docs}): {file_path}")
+        print(f"Processing ({doc_index}/{total_docs}): {os.path.basename(file_path)}")
 
         # Remove old chunks if they exist
         if record and "chunk_ids" in record:
