@@ -113,6 +113,7 @@ def main(test_mode=False):
     vectorstore = Chroma(
         persist_directory=CHROMA_PERSIST_DIR,
         embedding_function=embeddings,
+        collection_name="obsidian"
     )
 
     # --------------------------------------------------------------------------

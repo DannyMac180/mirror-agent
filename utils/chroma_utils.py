@@ -10,7 +10,7 @@ class ChromaUtils:
             client: ChromaDB client instance. If None, creates a new persistent client.
             collection_name: Name of the collection to use.
         """
-        self.client = client or chromadb.PersistentClient(path="./chroma_db")
+        self.client = client or chromadb.PersistentClient(path="/Users/danielmcateer/Desktop/dev/mirror-agent/data/chroma")
         self.collection = self.client.get_or_create_collection(collection_name)
 
     def query(
