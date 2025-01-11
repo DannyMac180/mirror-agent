@@ -65,7 +65,7 @@ Chunk Text:
 
 In 1-2 sentences, explain how this chunk relates to the overall document and what role it plays:"""
 
-    response_str = llm.invoke(prompt).text
+    response_str = llm.invoke(prompt)
     return response_str.strip()
 
 def main(test_mode=False):
@@ -85,7 +85,7 @@ def main(test_mode=False):
     # --------------------------------------------------------------------------
     # 2. Load environment variables and initialize models
     # --------------------------------------------------------------------------
-    vault_root = os.getenv("OBSIDIAN_VAULT_PATH")
+    vault_root = os.getenv("OBSIDIAN_PATH")
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
     logger.info("Starting Obsidian indexing job...")
@@ -106,7 +106,7 @@ def main(test_mode=False):
     CHROMA_PERSIST_DIR = os.path.join("data", "chroma")
     embeddings = HuggingFaceEmbeddings(
         model_name="BAAI/bge-large-en-v1.5",
-        model_kwargs={'device': 'cpu'},
+        model_kwargs={'device': 'mps'},
         encode_kwargs={'normalize_embeddings': True}
     )
 
