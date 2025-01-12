@@ -1,8 +1,8 @@
-from utils.chroma_utils import ChromaUtils
+from chroma_utils import ChromaUtils
 
 def test_query():
     chroma = ChromaUtils(collection_name='obsidian')
-    results = chroma.query('Tools of Titans', n_results=3)
+    results = chroma.query('Jordan Peterson', n_results=3)
     
     print('\nQuery Results:')
     for i, doc in enumerate(results['documents'][0]):
