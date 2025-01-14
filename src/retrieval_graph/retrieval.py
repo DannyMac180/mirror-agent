@@ -1,12 +1,13 @@
 """Manage the configuration of various retrievers.
 
 This module provides functionality to create and manage retrievers for different
-vector store backends, specifically Elasticsearch, Pinecone, and MongoDB.
+vector store backends, specifically Elasticsearch, Pinecone, MongoDB, and Chroma.
 """
 
 import os
 from contextlib import contextmanager
 from typing import Generator
+import logging
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.runnables import RunnableConfig
@@ -92,6 +93,45 @@ def make_mongodb_retriever(
 
 
 @contextmanager
+def make_chroma_retriever(
+    configuration: IndexConfiguration, embedding_model: Embeddings
+) -> Generator[VectorStoreRetriever, None, None]:
+    """
+    Configure this agent to connect to a Chroma (ChromaDB) vector store,
+    using environment variables for connection details.
+    """
+    try:
+        # Use default values if environment variables are not set
+        chroma_persist_dir = os.environ.get("CHROMA_PERSIST_DIR", "data/chroma")
+        chroma_collection_name = os.environ.get("CHROMA_COLLECTION_NAME", "obsidian")
+
+        # Import the Chroma-based vector store
+        from langchain_chroma import ChromaVectorStore
+        from langchain_huggingface import HuggingFaceEmbeddings
+
+        # Override embedding model to match obsidian_indexer if not provided
+        if not embedding_model:
+            embedding_model = HuggingFaceEmbeddings(
+                model_name="BAAI/bge-large-en-v1.5",
+                model_kwargs={'device': 'mps'},
+                encode_kwargs={'normalize_embeddings': True}
+            )
+
+        # Initialize the Chroma vector store
+        vstore = ChromaVectorStore(
+            collection_name=chroma_collection_name,
+            persist_directory=chroma_persist_dir,
+            embedding=embedding_model,
+        )
+
+        yield vstore.as_retriever(search_kwargs=configuration.search_kwargs)
+
+    except Exception as e:
+        logging.error("Failed to initialize Chroma retriever: %s", e)
+        raise
+
+
+@contextmanager
 def make_retriever(
     config: RunnableConfig,
 ) -> Generator[VectorStoreRetriever, None, None]:
@@ -102,6 +142,10 @@ def make_retriever(
     match configuration.retriever_provider:
         case "elastic" | "elastic-local":
             with make_elastic_retriever(configuration, embedding_model) as retriever:
+                yield retriever
+
+        case "chroma":
+            with make_chroma_retriever(configuration, embedding_model) as retriever:
                 yield retriever
 
         case "pinecone":

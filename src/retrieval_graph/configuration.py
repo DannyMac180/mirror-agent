@@ -22,12 +22,12 @@ class IndexConfiguration:
     user_id: str = field(default="1", metadata={"description": "Unique identifier for the user."})
 
     embedding_model: Annotated[
-        str,
+        Optional[str],
         {"__template_metadata__": {"kind": "embeddings"}},
     ] = field(
-        default="openai/text-embedding-3-small",
+        default=None,
         metadata={
-            "description": "Name of the embedding model to use. Must be in the form: provider/model-name."
+            "description": "Name of the embedding model to use. Must be in the form: provider/model-name. Optional for Chroma retriever."
         },
     )
 
