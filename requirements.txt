@@ -1,7 +1,10 @@
-google-cloud-logging>=3.9.0 
-tenacity>=8.2.3 
-langchain-community>=0.0.24
+langgraph>=0.0.19
 langchain>=0.1.0
 langchain-core>=0.1.10
 langchain-google-genai>=0.0.6
 google-generativeai>=0.3.2
+chromadb==0.5.23
+tokenizers==0.14.1
+transformers==4.34.1
+sentence-transformers==2.2.2
+langchain-community>=0.0.10
