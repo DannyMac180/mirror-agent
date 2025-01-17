@@ -1,6 +1,5 @@
 # eval_synthetic_qa_weave.py
 
-import os
 import json
 import asyncio
 
@@ -26,8 +25,7 @@ async def evaluate_retrieval_only(question: str, expected: str) -> dict:
         config = RunnableConfig(
             configurable={
                 "user_id": "1",
-                "retriever_provider": "pinecone",
-                "embedding_model": "openai/text-embedding-3-small",
+                "retriever_provider": "chroma",
                 "search_kwargs": {"k": 5}
             }
         )
