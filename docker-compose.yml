@@ -1,0 +1,6 @@
+services:
+  langgraph-api:
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000" # Expose port 8000

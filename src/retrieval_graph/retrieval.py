@@ -129,7 +129,7 @@ def make_chroma_retriever(
         if not embedding_model:
             embedding_model = HuggingFaceEmbeddings(
                 model_name="BAAI/bge-large-en-v1.5",
-                model_kwargs={'device': 'mps'},
+                model_kwargs={'device': 'cpu'},
                 encode_kwargs={'normalize_embeddings': True}
             )
 
