@@ -103,7 +103,7 @@ async def main():
     weave.init("mirror-agent-evals")
 
     data = load_data("data/synthetic_qa_dataset.json")
-    subset_data = data[:5]  # Testing with first 5 examples
+    subset_data = data[:100]  # Testing with first 100 examples
 
     examples = []
     for item in subset_data:
