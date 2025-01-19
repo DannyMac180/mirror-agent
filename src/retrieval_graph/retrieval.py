@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from typing import Generator, Optional, List, Dict, Any
 
 from langchain_core.embeddings import Embeddings
+from pydantic import PrivateAttr
 from langchain_core.runnables import RunnableConfig
 from langchain_core.vectorstores import VectorStoreRetriever
 from cohere import Client
@@ -145,6 +146,8 @@ def make_chroma_retriever(
         base_retriever = vstore.as_retriever(search_kwargs=search_kwargs)
         
         class CohereRerankedRetriever(VectorStoreRetriever):
+            _retriever: VectorStoreRetriever = PrivateAttr()
+
             def __init__(self, retriever, api_key: Optional[str] = None, top_k: int = 5):
                 self._retriever = retriever
                 self.co = Client(api_key=api_key or os.environ["COHERE_API_KEY"])
