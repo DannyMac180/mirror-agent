@@ -12,6 +12,7 @@ from typing import Generator, Optional, List, Dict, Any
 from langchain_core.embeddings import Embeddings
 from langchain_core.runnables import RunnableConfig
 from langchain_core.vectorstores import VectorStoreRetriever
+from cohere import Client
 
 from retrieval_graph.configuration import Configuration, IndexConfiguration  # noqa
 
@@ -126,7 +127,7 @@ def make_chroma_retriever(
         if not embedding_model:
             embedding_model = HuggingFaceEmbeddings(
                 model_name="BAAI/bge-large-en-v1.5",
-                model_kwargs={'device': 'mps'},
+                model_kwargs={'device': 'cpu'},
                 encode_kwargs={'normalize_embeddings': True}
             )
 
@@ -136,52 +137,41 @@ def make_chroma_retriever(
             embedding_function=embedding_model,
         )
         
-        base_retriever = vstore.as_retriever(search_kwargs=configuration.search_kwargs)
-        
-        class HuggingFaceReranker:
-            """Reranker using HuggingFace's text-embeddings-inference server."""
+        # Set default k=20 if not specified
+        search_kwargs = configuration.search_kwargs.copy()
+        if 'k' not in search_kwargs:
+            search_kwargs['k'] = 20
             
-            def __init__(self, url: str = "http://127.0.0.1:8080"):
-                self.url = url.rstrip("/")
-                
-            def rerank(self, query: str, texts: List[str], raw_scores: bool = False) -> List[Dict[str, Any]]:
-                """Rerank texts based on their relevance to the query."""
-                import requests
-                import json
-                
-                response = requests.post(
-                    f"{self.url}/rerank",
-                    headers={"Content-Type": "application/json"},
-                    data=json.dumps({
-                        "query": query,
-                        "texts": texts,
-                        "raw_scores": raw_scores
-                    })
-                )
-                return response.json()
-
-        class RerankedRetriever(VectorStoreRetriever):
-            def __init__(self, retriever, reranker):
-                self.retriever = retriever
-                self.reranker = reranker
+        base_retriever = vstore.as_retriever(search_kwargs=search_kwargs)
+        
+        class CohereRerankedRetriever(VectorStoreRetriever):
+            def __init__(self, retriever, api_key: Optional[str] = None, top_k: int = 5):
+                self._retriever = retriever
+                self.co = Client(api_key=api_key or os.environ["COHERE_API_KEY"])
+                self.top_k = top_k
+                # Initialize parent class with required fields
+                super().__init__(vectorstore=retriever.vectorstore, search_kwargs=retriever.search_kwargs, **retriever.kwargs)
                 
             def get_relevant_documents(self, query: str, *, runnable_config: Optional[RunnableConfig] = None):
-                # First get documents from base retriever
-                docs = self.retriever.get_relevant_documents(query, runnable_config=runnable_config)
+                # First get documents from base retriever (k=20)
+                docs = self._retriever.get_relevant_documents(query, runnable_config=runnable_config)
                 
                 # Extract texts for reranking
                 texts = [doc.page_content for doc in docs]
                 
-                # Rerank the texts
-                reranked = self.reranker.rerank(query, texts)
+                # Rerank using Cohere and get top 5
+                reranked = self.co.rerank(
+                    model="rerank-v3.5",
+                    query=query,
+                    documents=texts,
+                    top_n=self.top_k  # Get top 5 after reranking
+                )
                 
-                # Reorder the documents based on reranking scores
-                reranked_docs = [docs[item["index"]] for item in reranked]
+                # Return only the top k reranked docs
+                reranked_docs = [docs[result.index] for result in reranked.results]
                 return reranked_docs
 
-        reranker = HuggingFaceReranker()
-        
-        yield RerankedRetriever(base_retriever, reranker)
+        yield CohereRerankedRetriever(base_retriever)
 
     except Exception as e:
         logging.error("Failed to initialize Chroma retriever: %s", e)
