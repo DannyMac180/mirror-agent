@@ -147,13 +147,21 @@ def make_chroma_retriever(
         
         class CohereRerankedRetriever(VectorStoreRetriever):
             _retriever: VectorStoreRetriever = PrivateAttr()
+            co: Client = PrivateAttr()
+            top_k: int = PrivateAttr()
+
+            class Config:
+                underscore_attrs_are_private = True
 
             def __init__(self, retriever, api_key: Optional[str] = None, top_k: int = 5):
+                super().__init__(
+                    vectorstore=retriever.vectorstore,
+                    search_kwargs=retriever.search_kwargs,
+                    **retriever.kwargs
+                )
                 self._retriever = retriever
                 self.co = Client(api_key=api_key or os.environ["COHERE_API_KEY"])
                 self.top_k = top_k
-                # Initialize parent class with required fields
-                super().__init__(vectorstore=retriever.vectorstore, search_kwargs=retriever.search_kwargs, **retriever.kwargs)
                 
             def get_relevant_documents(self, query: str, *, runnable_config: Optional[RunnableConfig] = None):
                 # First get documents from base retriever (k=20)
