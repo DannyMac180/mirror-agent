@@ -14,10 +14,49 @@ from pydantic import PrivateAttr
 from langchain_core.runnables import RunnableConfig
 from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
+from langchain_cohere import CohereRerank
 from cohere import Client
 
 from retrieval_graph.configuration import Configuration, IndexConfiguration  # noqa
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Initialize CohereRerank compressor globally
+try:
+    cohere_reranker = CohereRerank(model="rerank-english-v3.0")  # Ensure COHERE_API_KEY is set
+    logging.info("CohereRerank compressor initialized successfully.")
+except Exception as e:
+    logging.error(f"Error initializing CohereRerank: {e}", exc_info=True)
+    cohere_reranker = None  # Handle cases where CohereRerank fails to initialize
+
+def create_compressed_retriever(base_retriever):
+    """
+    Wraps a base retriever with ContextualCompressionRetriever using CohereRerank.
+
+    Args:
+        base_retriever: The base retriever to wrap.
+
+    Returns:
+        ContextualCompressionRetriever: The retriever wrapped with CohereRerank,
+                                      or the base retriever if CohereRerank is not initialized.
+    """
+    if cohere_reranker:
+        try:
+            compressed_retriever = ContextualCompressionRetriever(
+                base_compressor=cohere_reranker,
+                base_retriever=base_retriever
+            )
+            logging.info(f"Successfully wrapped retriever {type(base_retriever).__name__} with ContextualCompressionRetriever.")
+            return compressed_retriever
+        except Exception as e:
+            logging.error(f"Error wrapping retriever with ContextualCompressionRetriever: {e}", exc_info=True)
+            logging.warning("Falling back to the base retriever without compression.")
+            return base_retriever  # Fallback to base retriever if compression fails
+    else:
+        logging.warning("CohereRerank not initialized. Returning base retriever without compression.")
+        return base_retriever  # Fallback to base retriever if CohereRerank is not available
 
 ## Encoder constructors
 def make_text_encoder(model: Optional[str]) -> Embeddings:
@@ -53,10 +92,7 @@ def make_text_encoder(model: Optional[str]) -> Embeddings:
         case _:
             raise ValueError(f"Unsupported embedding provider: {provider}")
 
-
 ## Retriever constructors
-
-
 def _ensure_env_var_set(var_name: str) -> str:
     """
     Helper to ensure that a required environment variable is set.
@@ -69,7 +105,6 @@ def _ensure_env_var_set(var_name: str) -> str:
         )
     return value
 
-
 def _check_elastic_env(retriever_provider: str) -> None:
     if retriever_provider == "elastic-local":
         _ensure_env_var_set("ELASTICSEARCH_USER")
@@ -78,72 +113,84 @@ def _check_elastic_env(retriever_provider: str) -> None:
         _ensure_env_var_set("ELASTICSEARCH_API_KEY")
     _ensure_env_var_set("ELASTICSEARCH_URL")
 
-
 @contextmanager
 def make_elastic_retriever(
     configuration: IndexConfiguration, embedding_model: Embeddings
 ) -> Generator[VectorStoreRetriever, None, None]:
     """Configure this agent to connect to a specific elastic index."""
-    from langchain_elasticsearch import ElasticsearchStore
-    _check_elastic_env(configuration.retriever_provider)
+    try:
+        from langchain_elasticsearch import ElasticsearchStore
+        _check_elastic_env(configuration.retriever_provider)
 
-    connection_options = {}
-    if configuration.retriever_provider == "elastic-local":
-        connection_options = {
-            "es_user": os.environ["ELASTICSEARCH_USER"],
-            "es_password": os.environ["ELASTICSEARCH_PASSWORD"],
-        }
-    else:
-        connection_options = {"es_api_key": os.environ["ELASTICSEARCH_API_KEY"]}
+        connection_options = {}
+        if configuration.retriever_provider == "elastic-local":
+            connection_options = {
+                "es_user": os.environ["ELASTICSEARCH_USER"],
+                "es_password": os.environ["ELASTICSEARCH_PASSWORD"],
+            }
+        else:
+            connection_options = {"es_api_key": os.environ["ELASTICSEARCH_API_KEY"]}
 
-    vstore = ElasticsearchStore(
-        **connection_options,  # type: ignore
-        es_url=os.environ["ELASTICSEARCH_URL"],
-        index_name="langchain_index",
-        embedding=embedding_model,
-    )
+        vstore = ElasticsearchStore(
+            **connection_options,  # type: ignore
+            es_url=os.environ["ELASTICSEARCH_URL"],
+            index_name="langchain_index",
+            embedding=embedding_model,
+        )
 
-    yield vstore.as_retriever(search_kwargs=configuration.search_kwargs)
-
+        base_retriever = vstore.as_retriever(search_kwargs=configuration.search_kwargs)
+        logging.info("Elasticsearch retriever initialized.")
+        yield create_compressed_retriever(base_retriever)
+    except Exception as e:
+        logging.error(f"Error initializing Elasticsearch retriever: {e}", exc_info=True)
+        yield None
 
 def _check_pinecone_env() -> None:
     _ensure_env_var_set("PINECONE_INDEX_NAME")
     _ensure_env_var_set("PINECONE_API_KEY")  # if needed by your usage
-
 
 @contextmanager
 def make_pinecone_retriever(
     configuration: IndexConfiguration, embedding_model: Embeddings
 ) -> Generator[VectorStoreRetriever, None, None]:
     """Configure this agent to connect to a specific pinecone index."""
-    from langchain_pinecone import PineconeVectorStore
-    _check_pinecone_env()
+    try:
+        from langchain_pinecone import PineconeVectorStore
+        _check_pinecone_env()
 
-    vstore = PineconeVectorStore.from_existing_index(
-        os.environ["PINECONE_INDEX_NAME"], embedding=embedding_model
-    )
-    yield vstore.as_retriever(search_kwargs=configuration.search_kwargs)
-
+        vstore = PineconeVectorStore.from_existing_index(
+            os.environ["PINECONE_INDEX_NAME"], embedding=embedding_model
+        )
+        base_retriever = vstore.as_retriever(search_kwargs=configuration.search_kwargs)
+        logging.info("Pinecone retriever initialized.")
+        yield create_compressed_retriever(base_retriever)
+    except Exception as e:
+        logging.error(f"Error initializing Pinecone retriever: {e}", exc_info=True)
+        yield None
 
 def _check_mongodb_env() -> None:
     _ensure_env_var_set("MONGODB_URI")
-
 
 @contextmanager
 def make_mongodb_retriever(
     configuration: IndexConfiguration, embedding_model: Embeddings
 ) -> Generator[VectorStoreRetriever, None, None]:
     """Configure this agent to connect to a specific MongoDB Atlas index & namespaces."""
-    from langchain_mongodb.vectorstores import MongoDBAtlasVectorSearch
-    _check_mongodb_env()
+    try:
+        from langchain_mongodb.vectorstores import MongoDBAtlasVectorSearch
+        _check_mongodb_env()
 
-    vstore = MongoDBAtlasVectorSearch.from_connection_string(
-        os.environ["MONGODB_URI"],
-        namespace="langgraph_retrieval_agent.default",
-        embedding=embedding_model,
-    )
-    yield vstore.as_retriever(search_kwargs=configuration.search_kwargs)
-
+        vstore = MongoDBAtlasVectorSearch.from_connection_string(
+            os.environ["MONGODB_URI"],
+            namespace="langgraph_retrieval_agent.default",
+            embedding=embedding_model,
+        )
+        base_retriever = vstore.as_retriever(search_kwargs=configuration.search_kwargs)
+        logging.info("MongoDB Atlas Vector Search retriever initialized.")
+        yield create_compressed_retriever(base_retriever)
+    except Exception as e:
+        logging.error(f"Error initializing MongoDB Atlas Vector Search retriever: {e}", exc_info=True)
+        yield None
 
 @contextmanager
 def make_chroma_retriever(
@@ -175,58 +222,12 @@ def make_chroma_retriever(
             search_kwargs['k'] = 20  # default for base retrieval prior to rerank
             
         base_retriever = vstore.as_retriever(search_kwargs=search_kwargs)
+        logging.info("Chroma retriever initialized.")
+        yield create_compressed_retriever(base_retriever)
         
-        class CohereRerankedRetriever(VectorStoreRetriever):
-            _retriever: VectorStoreRetriever = PrivateAttr()
-            co: Client = PrivateAttr()
-            top_k: int = PrivateAttr()
-
-            class Config:
-                underscore_attrs_are_private = True
-
-            def __init__(self, retriever: VectorStoreRetriever,
-                          api_key: Optional[str] = None,
-                          top_k: int = 5):
-                # NOTE: 'retriever.kwargs' does not exist on a standard VectorStoreRetriever.
-                #       We simply pass vectorstore + search_kwargs.
-                super().__init__(
-                    vectorstore=retriever.vectorstore,
-                    search_kwargs=retriever.search_kwargs
-                )
-
-                # Make sure we have an API key for Cohere
-                if not api_key and "COHERE_API_KEY" not in os.environ:
-                    raise ValueError("COHERE_API_KEY is missing in environment or 'api_key' argument.")
-                
-                self._retriever = retriever
-                self.co = Client(api_key=api_key or os.environ["COHERE_API_KEY"])
-                self.top_k = top_k
-                
-            def invoke(self, query: str, *, runnable_config: Optional[RunnableConfig] = None):
-                # First get documents from base retriever (k=20)
-                docs = self._retriever.invoke(query, runnable_config=runnable_config)
-                
-                # Extract texts for reranking
-                texts = [doc.page_content for doc in docs]
-                
-                # Rerank using Cohere and get top 5
-                reranked = self.co.rerank(
-                    model="rerank-v3.5",
-                    query=query,
-                    documents=texts,
-                    top_n=self.top_k  # Get top 5 after reranking
-                )
-                
-                # Return only the top k reranked docs
-                reranked_docs = [docs[result.index] for result in reranked.results]
-                return reranked_docs
-
-        yield CohereRerankedRetriever(base_retriever)
-
     except Exception as e:
-        logging.error("Failed to initialize Chroma retriever: %s", e)
-        raise
-
+        logging.error(f"Error creating Chroma retriever: {str(e)}")
+        yield None
 
 @contextmanager
 def make_retriever(
@@ -243,34 +244,18 @@ def make_retriever(
     match configuration.retriever_provider:
         case "elastic" | "elastic-local":
             with make_elastic_retriever(configuration, embedding_model) as retriever:
-                if hasattr(retriever, '_get_relevant_documents'):
-                    retriever.get_relevant_documents = lambda query, **kwargs: retriever._get_relevant_documents(
-                        query, run_manager=CallbackManagerForRetrieverRun.get_noop_manager(), **kwargs
-                    )
                 yield retriever
 
         case "chroma":
             with make_chroma_retriever(configuration, embedding_model) as retriever:
-                if hasattr(retriever, '_get_relevant_documents'):
-                    retriever.get_relevant_documents = lambda query, **kwargs: retriever._get_relevant_documents(
-                        query, run_manager=CallbackManagerForRetrieverRun.get_noop_manager(), **kwargs
-                    )
                 yield retriever
 
         case "pinecone":
             with make_pinecone_retriever(configuration, embedding_model) as retriever:
-                if hasattr(retriever, '_get_relevant_documents'):
-                    retriever.get_relevant_documents = lambda query, **kwargs: retriever._get_relevant_documents(
-                        query, run_manager=CallbackManagerForRetrieverRun.get_noop_manager(), **kwargs
-                    )
                 yield retriever
 
         case "mongodb":
             with make_mongodb_retriever(configuration, embedding_model) as retriever:
-                if hasattr(retriever, '_get_relevant_documents'):
-                    retriever.get_relevant_documents = lambda query, **kwargs: retriever._get_relevant_documents(
-                        query, run_manager=CallbackManagerForRetrieverRun.get_noop_manager(), **kwargs
-                    )
                 yield retriever
 
         case _:

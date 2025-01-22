@@ -1,26 +1,62 @@
 #!/usr/bin/env python3
 
 import argparse
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.callbacks import get_openai_callback
+from google import genai
 import os
-import json
+import sys
 
-def get_gemini_response(prompt, model_name="gemini-2.0-flash-thinking-exp-01-21"):
-    llm = ChatGoogleGenerativeAI(
-        model=model_name,
-        convert_system_message_to_human=True,
-        verbose=True
+def stream_response(response):
+    """Stream both thoughts and responses from the model."""
+    full_response = ""
+    thought_tokens = []
+
+    print("\nStreaming response:\n")
+    for chunk in response:
+        for part in chunk.candidates[0].content.parts:
+            if part.thought:
+                thought = f"Model Thought: {part.text}"
+                sys.stdout.write(f"\033[33m{thought}\033[0m\n")  # Yellow color for thought tokens
+                sys.stdout.flush()
+                thought_tokens.append(part.text)
+            else:
+                sys.stdout.write(part.text)
+                sys.stdout.flush()
+                full_response += part.text
+    
+    return full_response.strip(), thought_tokens
+
+def get_gemini_response(prompt: str, model_name: str = "gemini-2.0-flash-thinking-exp-01-21") -> dict:
+    # Configure the client with v1alpha API version
+    client = genai.Client(
+        api_key=os.getenv("GOOGLE_API_KEY"),
+        http_options={'api_version': 'v1alpha'}
     )
     
-    response = llm.invoke(prompt)
+    # Configure thinking settings
+    config = {
+        'thinking_config': {'include_thoughts': True},
+        'temperature': 0.7,
+        'safety_settings': [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
+    }
     
-    # Extract thinking tokens from the response metadata
-    thinking_tokens = response.additional_kwargs.get('thinking_tokens', [])
+    # Generate content with streaming
+    response = client.models.generate_content_stream(
+        model=model_name,
+        contents=prompt,
+        config=config
+    )
     
+    # Stream and collect response
+    full_response, thought_tokens = stream_response(response)
+            
     return {
-        'response': response.content,
-        'thinking_tokens': thinking_tokens
+        'response': full_response,
+        'thinking_tokens': thought_tokens
     }
 
 def main():
@@ -34,11 +70,13 @@ def main():
     try:
         result = get_gemini_response(args.prompt, args.model)
         
-        print("\nResponse:")
+        print("\n\nFinal Response:")
         print(result['response'])
-        print("\nThinking Tokens:")
-        for token in result['thinking_tokens']:
-            print(f"- {token}")
+        
+        if result['thinking_tokens']:
+            print("\nCollected Thinking Tokens:")
+            for token in result['thinking_tokens']:
+                print(f"- {token}")
             
     except Exception as e:
         print(f"Error: {str(e)}")
