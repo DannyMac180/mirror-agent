@@ -13,6 +13,7 @@ from langchain_core.embeddings import Embeddings
 from pydantic import PrivateAttr
 from langchain_core.runnables import RunnableConfig
 from langchain_core.vectorstores import VectorStoreRetriever
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from cohere import Client
 
 from retrieval_graph.configuration import Configuration, IndexConfiguration  # noqa
@@ -201,9 +202,9 @@ def make_chroma_retriever(
                 self.co = Client(api_key=api_key or os.environ["COHERE_API_KEY"])
                 self.top_k = top_k
                 
-            def get_relevant_documents(self, query: str, *, runnable_config: Optional[RunnableConfig] = None):
+            def invoke(self, query: str, *, runnable_config: Optional[RunnableConfig] = None):
                 # First get documents from base retriever (k=20)
-                docs = self._retriever.get_relevant_documents(query, runnable_config=runnable_config)
+                docs = self._retriever.invoke(query, runnable_config=runnable_config)
                 
                 # Extract texts for reranking
                 texts = [doc.page_content for doc in docs]
@@ -242,18 +243,34 @@ def make_retriever(
     match configuration.retriever_provider:
         case "elastic" | "elastic-local":
             with make_elastic_retriever(configuration, embedding_model) as retriever:
+                if hasattr(retriever, '_get_relevant_documents'):
+                    retriever.get_relevant_documents = lambda query, **kwargs: retriever._get_relevant_documents(
+                        query, run_manager=CallbackManagerForRetrieverRun.get_noop_manager(), **kwargs
+                    )
                 yield retriever
 
         case "chroma":
             with make_chroma_retriever(configuration, embedding_model) as retriever:
+                if hasattr(retriever, '_get_relevant_documents'):
+                    retriever.get_relevant_documents = lambda query, **kwargs: retriever._get_relevant_documents(
+                        query, run_manager=CallbackManagerForRetrieverRun.get_noop_manager(), **kwargs
+                    )
                 yield retriever
 
         case "pinecone":
             with make_pinecone_retriever(configuration, embedding_model) as retriever:
+                if hasattr(retriever, '_get_relevant_documents'):
+                    retriever.get_relevant_documents = lambda query, **kwargs: retriever._get_relevant_documents(
+                        query, run_manager=CallbackManagerForRetrieverRun.get_noop_manager(), **kwargs
+                    )
                 yield retriever
 
         case "mongodb":
             with make_mongodb_retriever(configuration, embedding_model) as retriever:
+                if hasattr(retriever, '_get_relevant_documents'):
+                    retriever.get_relevant_documents = lambda query, **kwargs: retriever._get_relevant_documents(
+                        query, run_manager=CallbackManagerForRetrieverRun.get_noop_manager(), **kwargs
+                    )
                 yield retriever
 
         case _:
