@@ -251,7 +251,7 @@ Context from retrieval:
 Query: {query}"""),
     ])
     
-    model = load_chat_model("gemini-2.0-flash-thinking-exp-1-21")
+    model = load_chat_model("gemini-2.0-flash-exp")
     
     context = format_docs(state.retrieved_docs) if state.retrieved_docs else ""
     message_value = await prompt.ainvoke(
