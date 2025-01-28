@@ -33,6 +33,12 @@ class RetrievalDecision(BaseModel):
     next: Literal["retrieve", "respond"]
 
 
+class ReasoningDecision(BaseModel):
+    """Decision on whether to apply reasoning."""
+    next: Literal["reason", "respond"]
+    explanation: str
+
+
 async def should_retrieve(
     state: State, *, config: RunnableConfig
 ) -> State:
@@ -150,7 +156,6 @@ async def respond(
 ) -> dict[str, list[BaseMessage]]:
     """Call the LLM powering our "agent"."""
     configuration = Configuration.from_runnable_config(config)
-    # Feel free to customize the prompt, model, and other logic!
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", configuration.response_system_prompt),
@@ -160,17 +165,105 @@ async def respond(
     model = load_chat_model(configuration.response_model)
 
     retrieved_docs = format_docs(state.retrieved_docs) if state.retrieved_docs else ""
+    reasoning = f"\nReasoning Trace:\n{state.reasoning_trace}" if state.reasoning_trace else ""
+    
     message_value = await prompt.ainvoke(
         {
             "messages": state.messages,
-            "retrieved_docs": retrieved_docs,
+            "retrieved_docs": retrieved_docs + reasoning,
             "system_time": datetime.now(tz=timezone.utc).isoformat(),
         },
         config,
     )
     response = await model.ainvoke(message_value, config)
-    # We return a list, because this will get added to the existing list
     return {"messages": [response]}
+
+
+async def should_reason(
+    state: State, *, config: RunnableConfig
+) -> State:
+    """Decide whether to apply reasoning to the query.
+    
+    This function analyzes the query to determine if it requires complex reasoning
+    like logic, scientific research, math, coding or data analysis.
+    """
+    configuration = Configuration.from_runnable_config(config)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You decide if a query needs complex reasoning. 
+
+Respond with 'reason' if the query requires:
+- Logic or analytical thinking
+- Scientific research or analysis
+- Mathematical calculations
+- Coding or technical solutions
+- Data analysis or interpretation
+- Multi-step problem solving
+- Complex decision making
+
+Respond with 'respond' if:
+- The query is simple and straightforward
+- Only requires retrieved context
+- Doesn't need complex analysis
+
+Format:
+{
+    "next": "reason" or "respond",
+    "explanation": "Brief explanation of why"
+}
+
+Query: {query}"""),
+    ])
+    
+    model = load_chat_model(configuration.query_model).with_structured_output(ReasoningDecision)
+    
+    message_value = await prompt.ainvoke(
+        {"query": get_message_text(state.messages[-1])},
+        config,
+    )
+    decision = await model.ainvoke(message_value, config)
+    
+    state.next = decision.next
+    return state
+
+
+async def apply_reasoning(
+    state: State, *, config: RunnableConfig
+) -> State:
+    """Apply reasoning to complex queries using Gemini 2.0 Flash Thinking."""
+    configuration = Configuration.from_runnable_config(config)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are an expert at breaking down and solving complex problems.
+Use Gemini 2.0 Flash Thinking to analyze queries requiring:
+- Logic/analytical thinking
+- Scientific research
+- Math
+- Coding
+- Data analysis
+
+Format your response as:
+1. Break down the problem
+2. Show your step-by-step reasoning
+3. Provide a clear conclusion
+
+Context from retrieval:
+{context}
+
+Query: {query}"""),
+    ])
+    
+    model = load_chat_model("gemini-2.0-flash-thinking-exp-1-21")
+    
+    context = format_docs(state.retrieved_docs) if state.retrieved_docs else ""
+    message_value = await prompt.ainvoke(
+        {
+            "query": get_message_text(state.messages[-1]),
+            "context": context
+        },
+        config,
+    )
+    response = await model.ainvoke(message_value, config)
+    state.reasoning_trace = response.content
+    return state
 
 
 # Define the graph with conditional routing
@@ -180,6 +273,8 @@ builder = StateGraph(State, input=InputState, config_schema=Configuration)
 builder.add_node("should_retrieve", should_retrieve)
 builder.add_node("generate_query", generate_query)
 builder.add_node("retrieve", retrieve)
+builder.add_node("should_reason", should_reason)
+builder.add_node("apply_reasoning", apply_reasoning)
 builder.add_node("respond", respond)
 
 # Add conditional edges
@@ -189,11 +284,20 @@ builder.add_conditional_edges(
     lambda state: state.next if hasattr(state, "next") else "retrieve",
     {
         "retrieve": "generate_query",
-        "respond": "respond",
+        "respond": "should_reason",
     },
 )
 builder.add_edge("generate_query", "retrieve")
-builder.add_edge("retrieve", "respond")
+builder.add_edge("retrieve", "should_reason")
+builder.add_conditional_edges(
+    "should_reason",
+    lambda state: state.next if hasattr(state, "next") else "respond",
+    {
+        "reason": "apply_reasoning",
+        "respond": "respond",
+    },
+)
+builder.add_edge("apply_reasoning", "respond")
 
 # Finally, we compile it!
 # This compiles it into a graph you can invoke and deploy.

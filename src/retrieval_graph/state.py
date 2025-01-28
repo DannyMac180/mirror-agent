@@ -160,5 +160,8 @@ class State(InputState):
     next: str = field(default="retrieve")
     """The next node to route to in the graph."""
 
+    reasoning_trace: Optional[str] = field(default=None)
+    """The reasoning trace of the agent."""
+
     # Feel free to add additional attributes to your state as needed.
     # Common examples include retrieved documents, extracted entities, API connections, etc.
