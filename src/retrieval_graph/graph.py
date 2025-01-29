@@ -205,10 +205,10 @@ Respond with 'respond' if:
 - Only requires retrieved context
 - Doesn't need complex analysis
 
-Format:
+Return your response in this exact format:
 {
-    "next": "reason" or "respond",
-    "explanation": "Brief explanation of why"
+    "next": <either "reason" or "respond">,
+    "explanation": <brief explanation>
 }
 
 Query: {query}"""),
