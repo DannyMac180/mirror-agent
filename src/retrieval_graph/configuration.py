@@ -32,10 +32,10 @@ class IndexConfiguration:
     )
 
     retriever_provider: Annotated[
-        Literal["elastic", "elastic-local", "pinecone", "mongodb", "chroma"],
+        Literal["chroma"],
         {"__template_metadata__": {"kind": "retriever"}},
     ] = field(
-        default="pinecone",
+        default="chroma",
         metadata={
             "description": "The vector store provider to use for retrieval."
         },
