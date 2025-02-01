@@ -1,25 +1,29 @@
-langgraph>=0.0.19
-langchain>=0.3.0,<0.4
-langchain-core>=0.3.0,<0.4
-langchain-google-genai>=0.0.6
-google-generativeai>=0.3.2
-chromadb==0.5.23
-tokenizers>=0.19.1
-transformers>=4.39.0
-sentence-transformers>=2.6.0
-langchain-community>=0.3.0,<0.4
+# Critical packages for the Mirror Agent retrieval graph
+
+# Pydantic for configuration and validation (v2 is required)
 pydantic>=2.0.0
 
-# Upgraded integration packages:
-langchain-experimental>=0.3.0,<0.4
-# For retrieval-graph compatibility, downgrade these two:
-langchain-elasticsearch>=0.2.2,<0.3.0
-langchain-google-vertexai>=2.0.0,<3
-langchain-cohere>=0.3.0,<0.4
-langchain-pinecone>=0.1.3,<0.2.0
-langchain-huggingface>=0.1.0,<0.2
-# Also, for langchain-google-vertexai:
-httpx>=0.27.0,<0.28.0
+# LangChain core abstractions
+langchain-core>=0.3.0,<0.4
 
-# Force pinecone-plugin-inference to a version compatible with pinecone-client:
-pinecone-plugin-inference>=1.0.3,<2.0.0
+# Community integrations (provides additional utilities like vectorstores, embeddings, etc.)
+langchain-community>=0.3.0,<0.4
+
+# OpenAI integration for query and response models
+langchain-openai>=0.2.0,<0.3
+
+# Cohere integration for reranking and embeddings
+langchain-cohere>=0.3.0,<0.4
+cohere>=2.0.0
+
+# Elasticsearch retriever support (updated version)
+langchain-elasticsearch>=0.3.0,<0.4.0
+
+# MongoDB retriever support
+langchain-mongodb>=0.2.0,<0.3.0
+
+# Graphing infrastructure for building your retrieval graph
+langgraph>=0.0.19
+
+# OpenAI Python package (used by langchain-openai)
+openai>=1.0.0

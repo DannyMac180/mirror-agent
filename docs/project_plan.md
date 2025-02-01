@@ -7,7 +7,7 @@ The **Mirror Agent** is an AI assistant concept that aims to help users understa
 - **Model-agnostic**: The user chooses which LLM (OpenAI, Anthropic, or other) is used under the hood.
 - **Socratic and reflective**: Encourages users to explore their own thoughts and feelings by asking open-ended questions and delivering feedback to foster self-discovery.
 - **Memory-enhanced**: Maintains user-specific context, conversation history, and documents for more personalized and coherent interactions.
-- **Extensible**: Utilizes a retriever to access additional documents/files and a reflection module that adds “self-awareness” to the agent, making interactions more meaningful over time.
+- **Extensible**: Utilizes a retriever to access additional documents/files and a reflection module that adds "self-awareness" to the agent, making interactions more meaningful over time.
 
 Based on the attached design sketch and the [LangGraph documentation](https://langchain-ai.github.io/langgraph/), this plan outlines the goals and phases for building the Mirror Agent.
 
@@ -39,7 +39,7 @@ Based on the attached design sketch and the [LangGraph documentation](https://la
 6. **LangGraph Integration**  
    - **StateGraph**: Defines the flow among the `Mirror Agent`, `Retriever`, `Memory`, `Reflector`, and user interface.  
    - **Nodes**: Each module (retriever, memory, reflection steps) is represented as a node.  
-   - **Edges**: Capture the logic (e.g., “if user requests retrieval, run retriever node”).  
+   - **Edges**: Capture the logic (e.g., "if user requests retrieval, run retriever node").  
    - **Conditional edges**: Decide next steps (reflection, memory update, direct user response) based on context.
 
 ---
@@ -51,7 +51,7 @@ Based on the attached design sketch and the [LangGraph documentation](https://la
    - Ability to switch or configure the LLM in real time or at startup.
 
 2. **Prompt Engineering**
-   - System messages for setting the Mirror Agent’s style and tone (Socratic, wise, supportive).
+   - System messages for setting the Mirror Agent's style and tone (Socratic, wise, supportive).
    - Templates for reflection, retrieving context, and memory usage.
 
 3. **Memory Management**
@@ -64,12 +64,12 @@ Based on the attached design sketch and the [LangGraph documentation](https://la
 
 5. **Reflection Module**
    - Logic for summarizing and analyzing previous user interactions.
-   - Mechanisms for scheduling or triggering “reflections” that incorporate the user’s personal patterns and documents.
+   - Mechanisms for scheduling or triggering "reflections" that incorporate the user's personal patterns and documents.
 
 6. **User Interface & Experience**
    - Chat, audio, or video-based user front-end.
    - Real-time feedback and conversation with the Mirror Agent.
-   - Clear “explanations” or “reflections” surfaces to the user, optionally with a togglable detail level.
+   - Clear "explanations" or "reflections" surfaces to the user, optionally with a togglable detail level.
 
 7. **LangGraph Implementation**
    - `langgraph.json` or equivalent configuration to specify dependencies, environment variables, and compiled graphs.
@@ -161,3 +161,6 @@ Based on the attached design sketch and the [LangGraph documentation](https://la
 ## Conclusion
 
 By following these phases, we will develop a **Mirror Agent** capable of Socratic dialogue, memory-driven personalization, on-demand retrieval of user documents, and reflective insights. The architecture relies on **LangGraph** to orchestrate the flow, ensuring modularity, extensibility, and clarity in how each part of the system (Retriever, Memory, Reflector, LLM) interacts. Once built, the agent will provide a unique and supportive user experience aimed at deeper self-understanding.
+
+# Changes
+- Resolved dependency conflicts: Removed langchain-pinecone>=0.1.3,<0.2.0 to align with langchain-core<0.4 and >=0.3.0.

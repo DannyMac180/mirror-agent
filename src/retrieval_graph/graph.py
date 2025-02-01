@@ -9,6 +9,7 @@ relevant documents, and formulating responses.
 from datetime import datetime, timezone
 from typing import Literal, cast
 from enum import Enum
+import os
 
 from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage
@@ -145,8 +146,17 @@ async def retrieve(
     Returns:
         dict[str, list[Document]]: A dictionary with a single key "retrieved_docs"
         containing a list of retrieved Document objects.
+
+    Raises:
+        ValueError: If the retriever is not properly configured or initialized.
     """
     with retrieval.make_retriever(config) as retriever:
+        if retriever is None:
+            missing_env = [var for var in ["RETRIEVER_URL", "RETRIEVER_API_KEY"] if not os.getenv(var)]
+            if missing_env:
+                raise ValueError("Missing environment variables: " + ", ".join(missing_env) + ". See [docs/langgraph.md] for configuration details.")
+            else:
+                raise ValueError("Retriever is not configured or failed to initialize. Please check your configuration.")
         response = await retriever.ainvoke(state.queries[-1], config)
         return {"retrieved_docs": response}
 
