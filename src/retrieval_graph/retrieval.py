@@ -8,8 +8,10 @@ import os
 import logging
 from contextlib import contextmanager
 from typing import Generator, Optional, List, Dict, Any
+import pickle
 
 from langchain_core.embeddings import Embeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from pydantic import PrivateAttr
 from langchain_core.runnables import RunnableConfig
 from langchain_core.vectorstores import VectorStoreRetriever
@@ -30,6 +32,30 @@ try:
 except Exception as e:
     logging.error(f"Error initializing CohereRerank: {e}", exc_info=True)
     cohere_reranker = None  # Handle cases where CohereRerank fails to initialize
+
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "mirror-agent")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+def load_embeddings_model(model_name: str) -> HuggingFaceEmbeddings:
+    """
+    Check if the embeddings model is cached locally; if not, download and cache it.
+    """
+    cache_path = os.path.join(CACHE_DIR, f"{model_name.replace('/', '_')}_embeddings.bin")
+    if os.path.exists(cache_path):
+        with open(cache_path, "rb") as f:
+            embeddings = pickle.load(f)
+            logging.info(f"Loaded cached embeddings model from {cache_path}")
+            return embeddings
+    else:
+        embeddings = HuggingFaceEmbeddings(
+            model_name=model_name,
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        with open(cache_path, "wb") as f:
+            pickle.dump(embeddings, f)
+            logging.info(f"Cached embeddings model to {cache_path}")
+        return embeddings
 
 def create_compressed_retriever(base_retriever):
     """
@@ -204,11 +230,7 @@ def make_chroma_retriever(
         from langchain_community.embeddings import HuggingFaceEmbeddings
 
         if not embedding_model:
-            embedding_model = HuggingFaceEmbeddings(
-                model_name="BAAI/bge-large-en-v1.5",
-                model_kwargs={'device': 'cpu'},
-                encode_kwargs={'normalize_embeddings': True}
-            )
+            embedding_model = load_embeddings_model("BAAI/bge-large-en-v1.5")
 
         vstore = Chroma(
             collection_name=chroma_collection_name,

@@ -206,10 +206,10 @@ Respond with 'respond' if:
 - Doesn't need complex analysis
 
 Return your response in this exact format:
-{
+{{
     "next": <either "reason" or "respond">,
     "explanation": <brief explanation>
-}
+}}
 
 Query: {query}"""),
     ])
