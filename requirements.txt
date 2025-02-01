@@ -27,3 +27,10 @@ langgraph>=0.0.19
 
 # OpenAI Python package (used by langchain-openai)
 openai>=1.0.0
+
+# PyTorch packages for HuggingFace embeddings
+torch>=2.2.0
+torchvision>=0.17.0
+torchaudio>=2.2.0
+
+google-generativeai

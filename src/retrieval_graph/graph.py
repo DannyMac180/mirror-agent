@@ -150,13 +150,14 @@ async def retrieve(
     Raises:
         ValueError: If the retriever is not properly configured or initialized.
     """
+    configuration = Configuration.from_runnable_config(config)
     with retrieval.make_retriever(config) as retriever:
         if retriever is None:
-            missing_env = [var for var in ["RETRIEVER_URL", "RETRIEVER_API_KEY"] if not os.getenv(var)]
-            if missing_env:
-                raise ValueError("Missing environment variables: " + ", ".join(missing_env) + ". See [docs/langgraph.md] for configuration details.")
-            else:
-                raise ValueError("Retriever is not configured or failed to initialize. Please check your configuration.")
+            if configuration.retriever_provider != "chroma":
+                missing_env = [var for var in ["RETRIEVER_URL", "RETRIEVER_API_KEY"] if not os.getenv(var)]
+                if missing_env:
+                    raise ValueError("Missing environment variables: " + ", ".join(missing_env) + ". See [docs/langgraph.md] for configuration details.")
+            raise ValueError("Retriever is not configured or failed to initialize. Please check your configuration.")
         response = await retriever.ainvoke(state.queries[-1], config)
         return {"retrieved_docs": response}
 
@@ -238,42 +239,81 @@ Query: {query}"""),
 
 async def apply_reasoning(
     state: State, *, config: RunnableConfig
-) -> State:
+) -> dict[str, str]:
     """Apply reasoning to complex queries using Gemini 2.0 Flash Thinking."""
     configuration = Configuration.from_runnable_config(config)
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are an expert at breaking down and solving complex problems.
-Use Gemini 2.0 Flash Thinking to analyze queries requiring:
-- Logic/analytical thinking
-- Scientific research
-- Math
-- Coding
-- Data analysis
+        ("system", """You are a wise assistant who applies reasoning to complex queries.
 
-Format your response as:
-1. Break down the problem
-2. Show your step-by-step reasoning
-3. Provide a clear conclusion
+Analyze the query and provide step-by-step reasoning that:
+1. Breaks down the problem into components
+2. Applies logical deduction
+3. Considers multiple perspectives
+4. Reaches clear conclusions
 
-Context from retrieval:
-{context}
+Current query: {query}
 
-Query: {query}"""),
+Available context: {context}"""),
     ])
     
-    model = load_chat_model("gemini-2.0-flash-exp")
-    
-    context = format_docs(state.retrieved_docs) if state.retrieved_docs else ""
-    message_value = await prompt.ainvoke(
-        {
-            "query": get_message_text(state.messages[-1]),
-            "context": context
-        },
-        config,
-    )
-    response = await model.ainvoke(message_value, config)
-    state.reasoning_trace = response.content
-    return state
+    if "gemini" in configuration.reasoning_model.lower():
+        # Use the native Google Gen AI Python SDK for the Gemini Thinking model.
+        import os
+        import asyncio
+        import google.generativeai as genai
+
+        # Configure the SDK using the GOOGLE_API_KEY environment variable.
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY environment variable is not set.")
+        genai.configure(api_key=api_key)
+
+        # Prepare the prompt text using our template.
+        context = format_docs(state.retrieved_docs) if state.retrieved_docs else ""
+        prompt_result = await prompt.ainvoke(
+            {
+                "query": get_message_text(state.messages[-1]),
+                "context": context
+            },
+            config,
+        )
+        # Extract the text content from the prompt result
+        prompt_text = str(prompt_result) if prompt_result else ""
+
+        # Call the synchronous SDK function in a non-blocking way.
+        model = genai.GenerativeModel("gemini-2.0-flash-thinking-exp-01-21")
+        response = await asyncio.to_thread(
+            model.generate_content,
+            prompt_text
+        )
+
+        # Extract the generated result
+        reasoning_result = response.text
+    else:
+        # Fallback to the legacy LangChain-based behavior.
+        model = load_chat_model(configuration.reasoning_model)
+        if "gemini" in configuration.reasoning_model.lower():
+            from types import MethodType
+            original_convert_input = model._convert_input
+            def gemini_convert_input(self, prompt_input):
+                if isinstance(prompt_input, dict) and "contents" in prompt_input:
+                    return prompt_input
+                return original_convert_input(prompt_input)
+            model._convert_input = MethodType(gemini_convert_input, model)
+
+        context = format_docs(state.retrieved_docs) if state.retrieved_docs else ""
+        message_value = await prompt.ainvoke(
+            {
+                "query": get_message_text(state.messages[-1]),
+                "context": context
+            },
+            config,
+        )
+        payload = {"contents": [message_value]}
+        response = await model.ainvoke(payload, config)
+        reasoning_result = str(response)
+
+    return {"reasoning_trace": reasoning_result}
 
 
 # Define the graph with conditional routing

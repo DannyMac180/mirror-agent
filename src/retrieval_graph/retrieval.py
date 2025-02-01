@@ -115,6 +115,15 @@ def make_text_encoder(model: Optional[str]) -> Embeddings:
             from langchain_cohere import CohereEmbeddings
 
             return CohereEmbeddings(model=model_name)  # type: ignore
+        case "BAAI":
+            from langchain_community.embeddings import HuggingFaceEmbeddings
+            import torch
+            device = "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu"
+            return HuggingFaceEmbeddings(
+                model_name="BAAI/bge-large-en-v1.5",
+                model_kwargs={'device': device},
+                encode_kwargs={'normalize_embeddings': True}
+            )
         case _:
             raise ValueError(f"Unsupported embedding provider: {provider}")
 
@@ -238,10 +247,11 @@ def make_chroma_retriever(
             embedding_function=embedding_model,
         )
         
-        # Set default k=20 if not specified
-        search_kwargs = configuration.search_kwargs.copy()
+        # Ensure search_kwargs is a dict and set default k=20 if not specified
+        search_kwargs = configuration.search_kwargs.copy() if configuration.search_kwargs else {}
         if 'k' not in search_kwargs:
             search_kwargs['k'] = 20  # default for base retrieval prior to rerank
+        logging.debug(f"Using search_kwargs: {search_kwargs}")
             
         base_retriever = vstore.as_retriever(search_kwargs=search_kwargs)
         logging.info("Chroma retriever initialized.")
@@ -258,8 +268,12 @@ def make_retriever(
     """Create a retriever for the agent, based on the current configuration."""
     configuration = IndexConfiguration.from_runnable_config(config)
 
-    if configuration.retriever_provider == "chroma":
-        embedding_model = None
+    if configuration.embedding_model is None:
+        if configuration.retriever_provider == "chroma":
+            default_model = "BAAI/bge-large-en-v1.5"
+        else:
+            default_model = "openai/text-embedding-ada-002"
+        embedding_model = make_text_encoder(default_model)
     else:
         embedding_model = make_text_encoder(configuration.embedding_model)
 

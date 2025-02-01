@@ -99,3 +99,10 @@ class Configuration(IndexConfiguration):
             "description": "The language model used for processing and refining queries. Should be in the form: provider/model-name."
         },
     )
+
+    reasoning_model: Annotated[str, {"__template_metadata__": {"kind": "llm"}}] = field(
+        default="gemini-2.0-flash-thinking-exp-01-21",
+        metadata={
+            "description": "The language model used for advanced reasoning and problem decomposition. Defaults to Gemini 2.0 Flash Thinking for enhanced analytical capabilities."
+        },
+    )
