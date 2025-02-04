@@ -9,7 +9,7 @@ The inspiration behind Mirror Agent comes from the understanding that self-refle
 - **Socratic Guidance**: Asking thoughtful questions that encourage you to explore your thoughts and feelings more deeply
 - **Personalized Reflection**: Learning from your past interactions to provide increasingly meaningful and context-aware responses
 - **Memory-Enhanced Understanding**: Building a comprehensive understanding of your journey through careful documentation of your insights and patterns
-- **Safe Exploration**: Offering a judgment-free space to explore your thoughts and feelings
+- **Self Exploration**: Offering a judgment-free space to explore your thoughts and feelings
 
 ## Core Features
 

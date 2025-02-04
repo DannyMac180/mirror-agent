@@ -2,7 +2,7 @@
 
 This module defines the state structures and reduction functions used in the
 retrieval graph. It includes definitions for document indexing, retrieval,
-and conversation management.
+and conversation management using mem0.ai as the memory store.
 
 Classes:
     IndexState: Represents the state for document indexing operations.
@@ -27,8 +27,12 @@ from langchain_core.documents import Document
 from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
 
-############################  Doc Indexing State  #############################
+from .mem0_client import Mem0Memory
 
+# Initialize mem0 client
+mem0 = Mem0Memory()
+
+############################  Doc Indexing State  #############################
 
 def reduce_docs(
     existing: Optional[Sequence[Document]],
@@ -44,94 +48,86 @@ def reduce_docs(
 
     This function handles various input types and converts them into a sequence of Document objects.
     It can delete existing documents, create new ones from strings or dictionaries, or return the existing documents.
+    All documents are stored in mem0.
 
     Args:
         existing (Optional[Sequence[Document]]): The existing docs in the state, if any.
         new (Union[Sequence[Document], Sequence[dict[str, Any]], Sequence[str], str, Literal["delete"]]):
             The new input to process. Can be a sequence of Documents, dictionaries, strings, a single string,
-            or the literal "delete".
+            or the literal "delete" to clear existing documents.
+
+    Returns:
+        Sequence[Document]: The processed sequence of Document objects.
     """
     if new == "delete":
         return []
+
+    # Convert input to Document objects
     if isinstance(new, str):
-        return [Document(page_content=new, metadata={"id": str(uuid.uuid4())})]
-    if isinstance(new, list):
-        coerced = []
-        for item in new:
-            if isinstance(item, str):
-                coerced.append(
-                    Document(page_content=item, metadata={"id": str(uuid.uuid4())})
-                )
-            elif isinstance(item, dict):
-                coerced.append(Document(**item))
-            else:
-                coerced.append(item)
-        return coerced
-    return existing or []
+        docs = [Document(page_content=new)]
+    elif isinstance(new, Sequence):
+        if not new:
+            return existing or []
+        if isinstance(new[0], Document):
+            docs = list(new)
+        elif isinstance(new[0], dict):
+            docs = [Document(**d) for d in new]
+        elif isinstance(new[0], str):
+            docs = [Document(page_content=s) for s in new]
+        else:
+            raise ValueError(f"Unsupported document type: {type(new[0])}")
+    else:
+        raise ValueError(f"Unsupported input type: {type(new)}")
+
+    # Store new documents in mem0
+    for doc in docs:
+        mem0.add_document(doc)
+
+    # Return combined documents
+    return docs
 
 
-# The index state defines the simple IO for the single-node index graph
-@dataclass(kw_only=True)
+@dataclass
 class IndexState:
     """Represents the state for document indexing and retrieval.
 
     This class defines the structure of the index state, which includes
     the documents to be indexed and the retriever used for searching
-    these documents.
+    these documents. Documents are stored in mem0.
     """
 
-    docs: Annotated[Sequence[Document], reduce_docs]
-    """A list of documents that the agent can index."""
+    docs: Annotated[Sequence[Document], reduce_docs] = field(default_factory=list)
 
 
 #############################  Agent State  ###################################
 
 
-# Optional, the InputState is a restricted version of the State that is used to
-# define a narrower interface to the outside world vs. what is maintained
-# internally.
-@dataclass(kw_only=True)
+def reduce_messages(existing: Sequence[AnyMessage], new: AnyMessage) -> Sequence[AnyMessage]:
+    """Add a new message to the conversation state.
+
+    Args:
+        existing (Sequence[AnyMessage]): The current messages in the state.
+        new (AnyMessage): The new message to add.
+
+    Returns:
+        Sequence[AnyMessage]: A new sequence containing all messages.
+    """
+    # Store new message in mem0
+    mem0.add_message(new)
+    
+    # Return updated messages from mem0
+    return mem0.get_messages()
+
+
+@dataclass
 class InputState:
     """Represents the input state for the agent.
 
     This class defines the structure of the input state, which includes
-    the messages exchanged between the user and the agent. It serves as
-    a restricted version of the full State, providing a narrower interface
-    to the outside world compared to what is maintained internally.
+    the messages exchanged between the user and the agent. Messages are stored in mem0.
     """
 
-    messages: Annotated[Sequence[AnyMessage], add_messages]
-    """Messages track the primary execution state of the agent.
-
-    Typically accumulates a pattern of Human/AI/Human/AI messages; if
-    you were to combine this template with a tool-calling ReAct agent pattern,
-    it may look like this:
-
-    1. HumanMessage - user input
-    2. AIMessage with .tool_calls - agent picking tool(s) to use to collect
-         information
-    3. ToolMessage(s) - the responses (or errors) from the executed tools
-    
-        (... repeat steps 2 and 3 as needed ...)
-    4. AIMessage without .tool_calls - agent responding in unstructured
-        format to the user.
-
-    5. HumanMessage - user responds with the next conversational turn.
-
-        (... repeat steps 2-5 as needed ... )
-    
-    Merges two lists of messages, updating existing messages by ID.
-
-    By default, this ensures the state is "append-only", unless the
-    new message has the same ID as an existing message.
-
-    Returns:
-        A new list of messages with the messages from `right` merged into `left`.
-        If a message in `right` has the same ID as a message in `left`, the
-        message from `right` will replace the message from `left`."""
-
-
-# This is the primary state of your agent, where you can store any information
+    messages: Annotated[Sequence[AnyMessage], reduce_messages] = field(default_factory=list)
 
 
 def add_queries(existing: Sequence[str], new: Sequence[str]) -> Sequence[str]:
@@ -147,21 +143,27 @@ def add_queries(existing: Sequence[str], new: Sequence[str]) -> Sequence[str]:
     return list(existing) + list(new)
 
 
-@dataclass(kw_only=True)
-class State(InputState):
-    """The state of your graph / agent."""
+@dataclass
+class State:
+    """The state of your graph / agent.
+
+    All state is persisted in mem0, providing durable storage and retrieval
+    of conversation history, documents, and other data.
+    """
 
     queries: Annotated[list[str], add_queries] = field(default_factory=list)
-    """A list of search queries that the agent has generated."""
-
     retrieved_docs: list[Document] = field(default_factory=list)
-    """Populated by the retriever. This is a list of documents that the agent can reference."""
-
     next: str = field(default="retrieve")
-    """The next node to route to in the graph."""
-
     reasoning_trace: Optional[str] = field(default=None)
-    """The reasoning trace of the agent."""
 
-    # Feel free to add additional attributes to your state as needed.
-    # Common examples include retrieved documents, extracted entities, API connections, etc.
+    def dict(self) -> dict:
+        """Convert the state to a dictionary representation."""
+        return {
+            "queries": self.queries,
+            "retrieved_docs": [
+                {"page_content": d.page_content, "metadata": d.metadata}
+                for d in self.retrieved_docs
+            ],
+            "next": self.next,
+            "reasoning_trace": self.reasoning_trace,
+        }

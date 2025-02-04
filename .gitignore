@@ -172,3 +172,6 @@ chroma_db/
 data/
 data/synthetic_qa_dataset.json
 data/indexed_files.json
+
+# windsurf rules
+.windsurfrules
