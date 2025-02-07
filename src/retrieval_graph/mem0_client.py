@@ -57,18 +57,31 @@ class Mem0Memory:
             org_id=os.getenv('MEM0_ORG_ID'),
             project_id=os.getenv('MEM0_PROJECT_ID')
         )
-        self.client.client.headers["Mem0-User-ID"] = self.user_id
+
+    def _add_memory_item(self, text: str, metadata: Dict[str, Any]) -> None:
+        """Helper method to add a memory item with proper filtering."""
+        memory_dict = {
+            "text": text,
+            "metadata": metadata,
+            "agent_id": self.agent_id,
+            "user_id": self.user_id,
+            "app_id": self.app_id,
+            "run_id": self.run_id
+        }
+        self.client.add([memory_dict])
 
     def get_memories(self, query: str = "", metadata: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Search for and retrieve memories matching the query and filters."""
-        return self.client.search(
-            query=query,
-            user_id=self.user_id,
-            agent_id=self.agent_id,
-            app_id=self.app_id,
-            run_id=self.run_id,
-            metadata=metadata
-        )
+        search_params = {
+            "query": query,
+            "agent_id": self.agent_id,
+            "user_id": self.user_id,
+            "app_id": self.app_id,
+            "run_id": self.run_id
+        }
+        if metadata:
+            search_params["metadata"] = metadata
+        return self.client.search(**search_params)
 
     def add_memory(self, memory: str) -> None:
         """Store a simple text memory.
@@ -76,14 +89,7 @@ class Mem0Memory:
         Args:
             memory (str): The memory text to be stored.
         """
-        memory_message = {
-            "text": memory,
-            "user_id": self.user_id,
-            "agent_id": self.agent_id,
-            "app_id": self.app_id,
-            "run_id": self.run_id
-        }
-        self.client.add([memory_message])
+        self._add_memory_item(memory, {"type": "memory"})
 
     def add_message(self, message: AnyMessage) -> None:
         """Store a conversation message.
@@ -91,21 +97,12 @@ class Mem0Memory:
         Args:
             message (AnyMessage): A message object (e.g., HumanMessage or AIMessage).
         """
-        message_dict = {
-            "text": message.content,
-            "user_id": self.user_id,
-            "agent_id": self.agent_id,
-            "app_id": self.app_id,
-            "run_id": self.run_id,
-            "metadata": {
-                "type": "message",
-                "message_type": message.type,
-                "additional_kwargs": message.additional_kwargs
-            }
+        metadata = {
+            "type": "message",
+            "message_type": message.type,
+            "additional_kwargs": message.additional_kwargs
         }
-        print("\nMessage Payload:")
-        print(message_dict)
-        self.client.add([message_dict])
+        self._add_memory_item(message.content, metadata)
 
     def add_document(self, document: Document) -> None:
         """Store a document.
@@ -113,20 +110,11 @@ class Mem0Memory:
         Args:
             document (Document): A Document object containing page content and metadata.
         """
-        document_dict = {
-            "text": document.page_content,
-            "user_id": self.user_id,
-            "agent_id": self.agent_id,
-            "app_id": self.app_id,
-            "run_id": self.run_id,
-            "metadata": {
-                "type": "document",
-                **document.metadata
-            }
+        metadata = {
+            "type": "document",
+            **document.metadata
         }
-        print("\nDocument Payload:")
-        print(document_dict)
-        self.client.add([document_dict])
+        self._add_memory_item(document.page_content, metadata)
 
     def get_messages(self) -> Sequence[AnyMessage]:
         """Retrieve stored conversation messages.
@@ -134,15 +122,18 @@ class Mem0Memory:
         Returns:
             Sequence[AnyMessage]: List of conversation messages.
         """
-        memories = self.get_memories(metadata={"type": "message"})
         messages = []
-        for memory in memories:
-            msg = AnyMessage(
-                content=memory.get("text", ""),
-                type=memory.get("metadata", {}).get("message_type", "human"),
-                additional_kwargs=memory.get("metadata", {}).get("additional_kwargs", {})
-            )
-            messages.append(msg)
+        try:
+            memories = self.get_memories(metadata={"type": "message"})
+            for memory in memories:
+                msg = AnyMessage(
+                    content=memory.get("text", ""),
+                    type=memory.get("metadata", {}).get("message_type", "human"),
+                    additional_kwargs=memory.get("metadata", {}).get("additional_kwargs", {})
+                )
+                messages.append(msg)
+        except Exception as e:
+            print(f"Error retrieving messages: {e}")
         return messages
 
     def get_documents(self) -> Sequence[Document]:
@@ -151,12 +142,15 @@ class Mem0Memory:
         Returns:
             Sequence[Document]: List of stored documents.
         """
-        memories = self.get_memories(metadata={"type": "document"})
         documents = []
-        for memory in memories:
-            doc = Document(
-                page_content=memory.get("text", ""),
-                metadata=memory.get("metadata", {})
-            )
-            documents.append(doc)
+        try:
+            memories = self.get_memories(metadata={"type": "document"})
+            for memory in memories:
+                doc = Document(
+                    page_content=memory.get("text", ""),
+                    metadata=memory.get("metadata", {})
+                )
+                documents.append(doc)
+        except Exception as e:
+            print(f"Error retrieving documents: {e}")
         return documents
